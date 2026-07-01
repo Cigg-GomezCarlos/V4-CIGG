@@ -1,0 +1,23 @@
+{
+  "colores": {
+    "fondo_oscuro": "#0A192F",
+    "fondo_claro": "#0A192F",
+    "principal": "#00F0FF",
+    "principal_hover": "#00B4D8",
+    "texto_oscuro": "#E2E8F0",
+    "texto_claro": "#E2E8F0",
+    "error": "#FF0033",
+    "exito": "#00F0FF",
+    "tarjetas": "#112240"
+  },
+  "fuentes": {
+    "titulo": ["Roboto Mono", 24, "bold"],
+    "subtitulo": ["Roboto Mono", 16, "bold"],
+    "normal": ["Roboto Mono", 12, "normal"]
+  },
+  "barra_superior": {
+    "fondo": "#020C1B",
+    "texto": "#00F0FF",
+    "hover_minimizar": "#112240"
+  }
+}
