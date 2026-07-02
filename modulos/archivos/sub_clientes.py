@@ -125,8 +125,13 @@ class SubmoduloClientes(ctk.CTkFrame):
 
             icono = "⭐" if c["tipo_contribuyente"] == "Especial" else "👤"
 
+            # 🟢 SOLUCIÓN: Si la Razón Social tiene más de 30 caracteres, la cortamos y añadimos "..."
+            razon_social_pantalla = c["razon_social"]
+            if len(razon_social_pantalla) > 30:
+                razon_social_pantalla = razon_social_pantalla[:27] + "..."
+
             datos_col = [
-                (c["razon_social"],                      280, col["texto_oscuro"]),
+                (razon_social_pantalla,                  280, col["texto_oscuro"]),
                 (c["rif"],                               150, "#8892B0"),
                 (f"{icono} {c['tipo_contribuyente']}",   130, "#6B8BAE"),
                 (c["telefono"],                          120, "#8892B0"),
