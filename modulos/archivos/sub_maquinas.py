@@ -314,7 +314,7 @@ class SubmoduloMaquinas(ctk.CTkFrame):
     # ─────────────────────────────────────────────────────────────────────────
 
     def _obtener_clientes_lista(self) -> list[str]:
-        """Retorna nombres/razón social de clientes para ComboBox."""
+        """Retorna nombres/razón social de clientes (legado, no usado en UI)."""
         try:
             con = sqlite3.connect(DB_NAME)
             cur = con.cursor()
@@ -380,14 +380,68 @@ class SubmoduloMaquinas(ctk.CTkFrame):
 
         entry_reg, entry_serial, entry_firmware = entries
 
-        # Cliente ComboBox
+        # ── Cliente con autocomplete ──────────────────────────────────────────
         ctk.CTkLabel(form, text="Cliente:", font=font,
                      text_color=col["texto_oscuro"]).pack(anchor="w", padx=20)
-        clientes_lista = self._obtener_clientes_lista()
-        cmb_cliente = ctk.CTkComboBox(form, values=clientes_lista, width=270,
-                                       font=font, dropdown_fg_color="#1A3550")
-        cmb_cliente.set(clientes_lista[0])
-        cmb_cliente.pack(pady=(4, 12), padx=20)
+        try:
+            _con_c = sqlite3.connect(DB_NAME)
+            _cur_c = _con_c.cursor()
+            _cur_c.execute("SELECT razon_social FROM clientes ORDER BY razon_social ASC")
+            _todos_clientes = ["DISPONIBLE EN STOCK"] + [r[0] for r in _cur_c.fetchall()]
+            _con_c.close()
+        except Exception:
+            _todos_clientes = ["DISPONIBLE EN STOCK"]
+
+        _dropdown_top = [None]
+
+        entry_cliente = ctk.CTkEntry(
+            form, placeholder_text="Escribe para buscar cliente…",
+            width=270, font=font, border_color=col["principal"],
+        )
+        entry_cliente.pack(pady=(4, 12), padx=20)
+
+        def _cerrar_dropdown_form(event=None):
+            if _dropdown_top[0] and _dropdown_top[0].winfo_exists():
+                _dropdown_top[0].destroy()
+            _dropdown_top[0] = None
+
+        def _seleccionar_cliente_form(nombre):
+            entry_cliente.delete(0, "end")
+            entry_cliente.insert(0, nombre)
+            _cerrar_dropdown_form()
+
+        def _actualizar_dropdown_form(event=None):
+            _cerrar_dropdown_form()
+            texto = entry_cliente.get().strip().lower()
+            coincidencias = [c for c in _todos_clientes
+                             if not texto or texto in c.lower()]
+            if not coincidencias:
+                return
+            entry_cliente.update_idletasks()
+            x = entry_cliente.winfo_rootx()
+            y = entry_cliente.winfo_rooty() + entry_cliente.winfo_height()
+            w = entry_cliente.winfo_width()
+            h = min(len(coincidencias) * 32, 200)
+            top = ctk.CTkToplevel()
+            top.overrideredirect(True)
+            top.geometry(f"{w}x{h}+{x}+{y}")
+            top.configure(fg_color="#1A3550")
+            top.attributes("-topmost", True)
+            top.lift()
+            _dropdown_top[0] = top
+            scr_d = ctk.CTkScrollableFrame(top, fg_color="#1A3550", corner_radius=0)
+            scr_d.pack(fill="both", expand=True)
+            for nombre in coincidencias:
+                ctk.CTkButton(
+                    scr_d, text=nombre, font=font,
+                    fg_color="transparent", hover_color=col["principal_hover"],
+                    text_color=col["texto_oscuro"], anchor="w", height=30,
+                    command=lambda n=nombre: _seleccionar_cliente_form(n),
+                ).pack(fill="x", padx=2, pady=1)
+
+        entry_cliente.bind("<KeyRelease>", _actualizar_dropdown_form)
+        entry_cliente.bind("<FocusIn>",   _actualizar_dropdown_form)
+        entry_cliente.bind("<FocusOut>",  lambda e: form.after(200, _cerrar_dropdown_form))
 
         lbl_st = ctk.CTkLabel(form, text="", font=font, text_color=col["error"])
         lbl_st.pack(pady=4)
@@ -425,7 +479,6 @@ class SubmoduloMaquinas(ctk.CTkFrame):
         scroll = ctk.CTkScrollableFrame(panel, fg_color="transparent")
         scroll.grid(row=2, column=0, sticky="nsew", padx=10, pady=(0, 10))
 
-        # Bind filtro en tiempo real
         entry_filtro.bind("<KeyRelease>", lambda e: cargar_lista())
 
         # ─────────────────────────────────────────────────────────────────────
@@ -449,7 +502,6 @@ class SubmoduloMaquinas(ctk.CTkFrame):
             except Exception:
                 rows = []
 
-            # Aplicar filtro
             if filtro:
                 rows = [r for r in rows if
                         filtro in (r[1] or "").lower() or
@@ -463,7 +515,6 @@ class SubmoduloMaquinas(ctk.CTkFrame):
                              font=font, text_color="#4A6FA5").pack(pady=20)
                 return
 
-            # Encabezado
             headers = ["Registro", "Serial", "Firmware", "Cliente"]
             widths  = [110, 130, 90, 170]
             hdr_row = ctk.CTkFrame(scroll, fg_color="#0A192F")
@@ -472,7 +523,6 @@ class SubmoduloMaquinas(ctk.CTkFrame):
                 ctk.CTkLabel(hdr_row, text=h,
                              font=(font[0], font[1], "bold"),
                              text_color=col["principal"], width=w, anchor="w").pack(side="left", padx=4)
-            # Espacio para botones
             ctk.CTkLabel(hdr_row, text="", width=72).pack(side="left")
 
             for i, (uid, reg, serial, firm, cliente) in enumerate(rows):
@@ -480,7 +530,6 @@ class SubmoduloMaquinas(ctk.CTkFrame):
                 fila = ctk.CTkFrame(scroll, fg_color=bg, corner_radius=4)
                 fila.pack(fill="x", pady=2)
 
-                # ── Botones reservados a la derecha (ANTES de los labels) ────
                 btn_frame = ctk.CTkFrame(fila, fg_color="transparent", width=76, height=34)
                 btn_frame.pack(side="right", padx=4, pady=0)
                 btn_frame.pack_propagate(False)
@@ -501,7 +550,6 @@ class SubmoduloMaquinas(ctk.CTkFrame):
                                 _abrir_modal_editar(u, r, s, fw, cl),
                     ).pack(side="right", padx=(2, 0))
 
-                # ── Labels de datos ───────────────────────────────────────────
                 for val, w in zip([reg, serial, firm, cliente or "—"], widths):
                     ctk.CTkLabel(fila, text=str(val), font=font,
                                  text_color=col["texto_oscuro"],
@@ -528,7 +576,7 @@ class SubmoduloMaquinas(ctk.CTkFrame):
 
             modal = ctk.CTkToplevel(self)
             modal.title("Editar Unidad")
-            modal.geometry("460x440")
+            modal.geometry("460x480")
             modal.resizable(False, False)
             modal.configure(fg_color=col2["fondo_oscuro"])
             modal.grab_set()
@@ -555,13 +603,69 @@ class SubmoduloMaquinas(ctk.CTkFrame):
 
             e_reg2, e_serial2, e_firm2 = entries_edit
 
+            # ── Cliente autocomplete en modal ─────────────────────────────────
             ctk.CTkLabel(modal, text="Cliente:", font=font,
                          text_color=col2["texto_oscuro"]).pack(anchor="w", padx=40)
-            clientes_edit = self._obtener_clientes_lista()
-            cmb_edit = ctk.CTkComboBox(modal, values=clientes_edit, width=380,
-                                        font=font, dropdown_fg_color="#1A3550")
-            cmb_edit.set(cliente if cliente else clientes_edit[0])
-            cmb_edit.pack(pady=(4, 10), padx=40)
+            try:
+                _con_e = sqlite3.connect(DB_NAME)
+                _cur_e = _con_e.cursor()
+                _cur_e.execute("SELECT razon_social FROM clientes ORDER BY razon_social ASC")
+                _clientes_edit = ["DISPONIBLE EN STOCK"] + [r[0] for r in _cur_e.fetchall()]
+                _con_e.close()
+            except Exception:
+                _clientes_edit = ["DISPONIBLE EN STOCK"]
+
+            _drop_edit = [None]
+
+            entry_edit_cli = ctk.CTkEntry(
+                modal, placeholder_text="Escribe para buscar cliente…",
+                width=380, font=font, border_color=col2["principal"],
+            )
+            entry_edit_cli.insert(0, cliente if cliente else "")
+            entry_edit_cli.pack(pady=(4, 10), padx=40)
+
+            def _cerrar_drop_edit(event=None):
+                if _drop_edit[0] and _drop_edit[0].winfo_exists():
+                    _drop_edit[0].destroy()
+                _drop_edit[0] = None
+
+            def _sel_edit(nombre):
+                entry_edit_cli.delete(0, "end")
+                entry_edit_cli.insert(0, nombre)
+                _cerrar_drop_edit()
+
+            def _act_drop_edit(event=None):
+                _cerrar_drop_edit()
+                texto = entry_edit_cli.get().strip().lower()
+                coincidencias = [c for c in _clientes_edit
+                                 if not texto or texto in c.lower()]
+                if not coincidencias:
+                    return
+                entry_edit_cli.update_idletasks()
+                x = entry_edit_cli.winfo_rootx()
+                y = entry_edit_cli.winfo_rooty() + entry_edit_cli.winfo_height()
+                w = entry_edit_cli.winfo_width()
+                h = min(len(coincidencias) * 32, 200)
+                top2 = ctk.CTkToplevel()
+                top2.overrideredirect(True)
+                top2.geometry(f"{w}x{h}+{x}+{y}")
+                top2.configure(fg_color="#1A3550")
+                top2.attributes("-topmost", True)
+                top2.lift()
+                _drop_edit[0] = top2
+                scr2 = ctk.CTkScrollableFrame(top2, fg_color="#1A3550", corner_radius=0)
+                scr2.pack(fill="both", expand=True)
+                for nombre in coincidencias:
+                    ctk.CTkButton(
+                        scr2, text=nombre, font=font,
+                        fg_color="transparent", hover_color=col2["principal_hover"],
+                        text_color=col2["texto_oscuro"], anchor="w", height=30,
+                        command=lambda n=nombre: _sel_edit(n),
+                    ).pack(fill="x", padx=2, pady=1)
+
+            entry_edit_cli.bind("<KeyRelease>", _act_drop_edit)
+            entry_edit_cli.bind("<FocusIn>",   _act_drop_edit)
+            entry_edit_cli.bind("<FocusOut>",  lambda e: modal.after(200, _cerrar_drop_edit))
 
             lbl_err = ctk.CTkLabel(modal, text="", font=font, text_color=col2["error"])
             lbl_err.pack(pady=4)
@@ -570,7 +674,7 @@ class SubmoduloMaquinas(ctk.CTkFrame):
                 nuevo_reg    = e_reg2.get().strip()
                 nuevo_serial = e_serial2.get().strip()
                 nuevo_firm   = e_firm2.get().strip()
-                nuevo_cli    = cmb_edit.get().strip()
+                nuevo_cli    = entry_edit_cli.get().strip()
 
                 if not nuevo_reg or not nuevo_serial or not nuevo_firm:
                     lbl_err.configure(text="⚠ Registro, Serial y Firmware son obligatorios.")
@@ -604,7 +708,7 @@ class SubmoduloMaquinas(ctk.CTkFrame):
             reg    = entry_reg.get().strip()
             serial = entry_serial.get().strip()
             firm   = entry_firmware.get().strip()
-            cli    = cmb_cliente.get().strip()
+            cli    = entry_cliente.get().strip()
 
             if not reg or not serial:
                 lbl_st.configure(text="Registro y Serial son obligatorios.", text_color=col["error"])
@@ -626,9 +730,8 @@ class SubmoduloMaquinas(ctk.CTkFrame):
                 lbl_st.configure(text="✅ Unidad registrada. Abriendo documentos…", text_color=col["principal"])
                 for e in entries:
                     e.delete(0, "end")
-                cmb_cliente.set(clientes_lista[0])
+                entry_cliente.delete(0, "end")
                 cargar_lista()
-                # Abrir automáticamente carta de enajenación + carta de entrega
                 self.after(300, lambda: imprimir_docs_al_registrar(
                     mid, nombre_mod, reg, serial, firm, cli))
             except sqlite3.IntegrityError:
