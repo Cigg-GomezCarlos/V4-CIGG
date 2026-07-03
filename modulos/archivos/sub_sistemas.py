@@ -418,7 +418,7 @@ class SubmoduloSistemas(ctk.CTkFrame):
             w = entry_cliente.winfo_width()
             h = min(len(coincidencias) * 32, 192)
 
-            top = ctk.CTkToplevel()
+            top = ctk.CTkToplevel(self)
             top.overrideredirect(True)
             top.geometry(f"{w}x{h}+{x}+{y}")
             top.configure(fg_color="#1A3550")
@@ -438,7 +438,7 @@ class SubmoduloSistemas(ctk.CTkFrame):
 
         entry_cliente.bind("<KeyRelease>", _actualizar_dropdown)
         # Cierra dropdown con pequeño delay para permitir el click en la opción
-        entry_cliente.bind("<FocusOut>", lambda e: form.after(200, _cerrar_dropdown))
+        entry_cliente.bind("<FocusOut>", lambda e: form.after(150, _cerrar_dropdown))
 
         # ── Campo Contrato (adjunto) ───────────────────────────────────────────
         ctk.CTkLabel(form, text="Contrato (PDF/DOC):", font=font,

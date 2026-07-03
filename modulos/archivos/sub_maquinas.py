@@ -422,7 +422,7 @@ class SubmoduloMaquinas(ctk.CTkFrame):
             y = entry_cliente.winfo_rooty() + entry_cliente.winfo_height()
             w = entry_cliente.winfo_width()
             h = min(len(coincidencias) * 32, 200)
-            top = ctk.CTkToplevel()
+            top = ctk.CTkToplevel(self)
             top.overrideredirect(True)
             top.geometry(f"{w}x{h}+{x}+{y}")
             top.configure(fg_color="#1A3550")
@@ -441,7 +441,7 @@ class SubmoduloMaquinas(ctk.CTkFrame):
 
         entry_cliente.bind("<KeyRelease>", _actualizar_dropdown_form)
         entry_cliente.bind("<FocusIn>",   _actualizar_dropdown_form)
-        entry_cliente.bind("<FocusOut>",  lambda e: form.after(200, _cerrar_dropdown_form))
+        entry_cliente.bind("<FocusOut>",  lambda e: form.after(150, _cerrar_dropdown_form))
 
         lbl_st = ctk.CTkLabel(form, text="", font=font, text_color=col["error"])
         lbl_st.pack(pady=4)
@@ -646,7 +646,7 @@ class SubmoduloMaquinas(ctk.CTkFrame):
                 y = entry_edit_cli.winfo_rooty() + entry_edit_cli.winfo_height()
                 w = entry_edit_cli.winfo_width()
                 h = min(len(coincidencias) * 32, 200)
-                top2 = ctk.CTkToplevel()
+                top2 = ctk.CTkToplevel(modal)
                 top2.overrideredirect(True)
                 top2.geometry(f"{w}x{h}+{x}+{y}")
                 top2.configure(fg_color="#1A3550")
@@ -665,7 +665,8 @@ class SubmoduloMaquinas(ctk.CTkFrame):
 
             entry_edit_cli.bind("<KeyRelease>", _act_drop_edit)
             entry_edit_cli.bind("<FocusIn>",   _act_drop_edit)
-            entry_edit_cli.bind("<FocusOut>",  lambda e: modal.after(200, _cerrar_drop_edit))
+            entry_edit_cli.bind("<FocusOut>",  lambda e: modal.after(150, _cerrar_drop_edit))
+            modal.bind("<Destroy>", lambda e: _cerrar_drop_edit(), add="+")
 
             lbl_err = ctk.CTkLabel(modal, text="", font=font, text_color=col2["error"])
             lbl_err.pack(pady=4)
