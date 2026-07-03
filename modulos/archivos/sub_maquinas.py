@@ -172,6 +172,14 @@ class SubmoduloMaquinas(ctk.CTkFrame):
             command=lambda i=mid, n=nombre, f=fabricante: self._mostrar_vista_unidades(i, n, f),
         ).pack(fill="x", padx=15, pady=(0, 5))
 
+        ctk.CTkButton(
+            card, text="✏️ Editar Modelo",
+            font=self.estilos["fuentes"]["normal"],
+            fg_color="#1A3550", hover_color=col["principal_hover"],
+            text_color=col["texto_oscuro"],
+            command=lambda i=mid, n=nombre, f=fabricante, im=img_nombre: self._editar_modelo(i, n, f, im),
+        ).pack(fill="x", padx=15, pady=(0, 5))
+
         if self._puede_eliminar:
             ctk.CTkButton(
                 card, text="🗑️ Eliminar Modelo",
@@ -181,6 +189,24 @@ class SubmoduloMaquinas(ctk.CTkFrame):
             ).pack(fill="x", padx=15, pady=(0, 15))
 
     def _eliminar_modelo(self, mid):
+        # Verificar si tiene unidades registradas
+        try:
+            con = sqlite3.connect(DB_NAME)
+            cur = con.cursor()
+            cur.execute("SELECT COUNT(*) FROM maquinas_fiscales WHERE modelo_id=?", (mid,))
+            total = cur.fetchone()[0]
+            con.close()
+        except Exception:
+            total = 0
+        if total > 0:
+            messagebox.showwarning(
+                "No se puede eliminar",
+                f"Este modelo tiene {total} unidad(es) registrada(s).\n"
+                "Elimine primero todas las unidades asociadas.",
+            )
+            return
+        if not messagebox.askyesno("Confirmar", "¿Eliminar este modelo de máquina?"):
+            return
         try:
             con = sqlite3.connect(DB_NAME)
             cur = con.cursor()
@@ -191,6 +217,108 @@ class SubmoduloMaquinas(ctk.CTkFrame):
         except Exception:
             pass
         self._refrescar_cuadricula()
+
+    def _editar_modelo(self, mid, nombre_actual, fabricante_actual, img_actual):
+        col  = self.estilos["colores"]
+        font = self.estilos["fuentes"]["normal"]
+
+        ventana = ctk.CTkToplevel(self)
+        ventana.title("Editar Modelo de Máquina")
+        ventana.geometry("480x520")
+        ventana.resizable(False, False)
+        ventana.configure(fg_color=col["fondo_oscuro"])
+        ventana.grab_set()
+        ventana.lift()
+
+        ctk.CTkLabel(ventana, text="✏️ EDITAR MODELO",
+                     font=self.estilos["fuentes"]["subtitulo"],
+                     text_color=col["principal"]).pack(pady=(25, 10))
+
+        ctk.CTkLabel(ventana, text="Nombre del modelo:", font=font,
+                     text_color=col["texto_oscuro"]).pack(anchor="w", padx=40)
+        entry_nombre = ctk.CTkEntry(ventana, width=400, font=font,
+                                    border_color=col["principal"])
+        entry_nombre.insert(0, nombre_actual or "")
+        entry_nombre.pack(padx=40, pady=(4, 16))
+
+        ctk.CTkLabel(ventana, text="Fabricante (proveedor tipo Máquinas Fiscales):",
+                     font=font, text_color=col["texto_oscuro"]).pack(anchor="w", padx=40)
+        fabricantes = obtener_proveedores_fiscales()
+        valores_fab = fabricantes if fabricantes else ["⚠ Registre un proveedor de Máquinas Fiscales"]
+        cmb_fab = ctk.CTkComboBox(ventana, values=valores_fab,
+                                   width=400, height=34,
+                                   dropdown_fg_color="#1A3550")
+        cmb_fab.set(fabricante_actual if fabricante_actual in valores_fab else valores_fab[0])
+        cmb_fab.pack(padx=40, pady=(4, 16))
+
+        self._ruta_img_edicion = ""
+        ctk.CTkLabel(ventana, text="Imagen del modelo (opcional):",
+                     font=font, text_color=col["texto_oscuro"]).pack(anchor="w", padx=40)
+        frame_img = ctk.CTkFrame(ventana, fg_color="transparent")
+        frame_img.pack(fill="x", padx=40, pady=(4, 16))
+        lbl_img = ctk.CTkLabel(frame_img,
+                               text=img_actual if img_actual else "Sin imagen seleccionada",
+                               font=font, text_color=col["principal"] if img_actual else "#4A6FA5")
+        lbl_img.pack(side="left", fill="x", expand=True)
+
+        def seleccionar_imagen():
+            ruta = fd.askopenfilename(
+                title="Selecciona imagen del modelo",
+                filetypes=[("Imágenes", "*.png *.jpg *.jpeg *.bmp *.webp")],
+            )
+            if ruta:
+                self._ruta_img_edicion = ruta
+                lbl_img.configure(text=os.path.basename(ruta), text_color=col["principal"])
+
+        ctk.CTkButton(frame_img, text="📁 Buscar", font=font, width=110,
+                      fg_color="#1A3550", hover_color=col["principal_hover"],
+                      text_color=col["texto_oscuro"],
+                      command=seleccionar_imagen).pack(side="right")
+
+        lbl_status = ctk.CTkLabel(ventana, text="", font=font, text_color=col["error"])
+        lbl_status.pack(pady=6)
+
+        def guardar():
+            nombre = entry_nombre.get().strip()
+            fabricante = cmb_fab.get()
+            if not nombre:
+                lbl_status.configure(text="⚠ El nombre del modelo es obligatorio.")
+                return
+            if "⚠" in fabricante:
+                lbl_status.configure(text="⚠ Selecciona un fabricante válido.")
+                return
+            nombre_img = img_actual or ""
+            if self._ruta_img_edicion and os.path.exists(self._ruta_img_edicion):
+                nombre_img = os.path.basename(self._ruta_img_edicion)
+                destino = os.path.join("imagenes", nombre_img)
+                try:
+                    if not os.path.exists(destino):
+                        shutil.copy2(self._ruta_img_edicion, destino)
+                except Exception:
+                    pass
+            try:
+                con = sqlite3.connect(DB_NAME)
+                cur = con.cursor()
+                cur.execute("""
+                    UPDATE modelos_maquinas
+                       SET nombre=?, fabricante=?, nombre_imagen=?
+                     WHERE id=?
+                """, (nombre, fabricante, nombre_img, mid))
+                con.commit()
+                con.close()
+                ventana.destroy()
+                self._refrescar_cuadricula()
+            except sqlite3.IntegrityError:
+                lbl_status.configure(text="⚠ Ya existe un modelo con ese nombre.")
+            except Exception as e:
+                lbl_status.configure(text=f"Error: {e}")
+
+        ctk.CTkButton(
+            ventana, text="💾 GUARDAR CAMBIOS",
+            font=font, width=400, height=42,
+            fg_color=col["principal"], hover_color=col["principal_hover"],
+            text_color="#0A192F", command=guardar,
+        ).pack(pady=10, padx=40)
 
     # ─────────────────────────────────────────────────────────────────────────
     # VENTANA MODAL: CREAR MODELO

@@ -171,6 +171,14 @@ class SubmoduloSistemas(ctk.CTkFrame):
             command=lambda i=mid, n=nombre, p=proveedor: self._mostrar_vista_licencias(i, n, p),
         ).pack(fill="x", padx=15, pady=(0, 5))
 
+        ctk.CTkButton(
+            card, text="✏️ Editar Sistema",
+            font=self.estilos["fuentes"]["normal"],
+            fg_color="#1A3550", hover_color=col["principal_hover"],
+            text_color=col["texto_oscuro"],
+            command=lambda i=mid, n=nombre, p=proveedor, im=img_nombre: self._editar_modelo(i, n, p, im),
+        ).pack(fill="x", padx=15, pady=(0, 5))
+
         if self._puede_eliminar:
             ctk.CTkButton(
                 card, text="🗑️ Eliminar Sistema",
@@ -180,7 +188,23 @@ class SubmoduloSistemas(ctk.CTkFrame):
             ).pack(fill="x", padx=15, pady=(0, 15))
 
     def _eliminar_modelo(self, mid):
-        if not messagebox.askyesno("Confirmar", "¿Eliminar este sistema y todas sus licencias?"):
+        # Verificar si tiene licencias registradas
+        try:
+            con = sqlite3.connect(DB_NAME)
+            cur = con.cursor()
+            cur.execute("SELECT COUNT(*) FROM sistemas_licencias WHERE modelo_id=?", (mid,))
+            total = cur.fetchone()[0]
+            con.close()
+        except Exception:
+            total = 0
+        if total > 0:
+            messagebox.showwarning(
+                "No se puede eliminar",
+                f"Este sistema tiene {total} licencia(s) registrada(s).\n"
+                "Elimine primero todas las licencias asociadas.",
+            )
+            return
+        if not messagebox.askyesno("Confirmar", "¿Eliminar este sistema?"):
             return
         try:
             con = sqlite3.connect(DB_NAME)
@@ -192,6 +216,108 @@ class SubmoduloSistemas(ctk.CTkFrame):
         except Exception:
             pass
         self._refrescar_cuadricula()
+
+    def _editar_modelo(self, mid, nombre_actual, proveedor_actual, img_actual):
+        col  = self.estilos["colores"]
+        font = self.estilos["fuentes"]["normal"]
+
+        ventana = ctk.CTkToplevel(self)
+        ventana.title("Editar Sistema")
+        ventana.geometry("480x520")
+        ventana.resizable(False, False)
+        ventana.configure(fg_color=col["fondo_oscuro"])
+        ventana.grab_set()
+        ventana.lift()
+
+        ctk.CTkLabel(ventana, text="✏️ EDITAR SISTEMA",
+                     font=self.estilos["fuentes"]["subtitulo"],
+                     text_color=col["principal"]).pack(pady=(25, 10))
+
+        ctk.CTkLabel(ventana, text="Nombre del sistema:", font=font,
+                     text_color=col["texto_oscuro"]).pack(anchor="w", padx=40)
+        entry_nombre = ctk.CTkEntry(ventana, width=400, font=font,
+                                    border_color=col["principal"])
+        entry_nombre.insert(0, nombre_actual or "")
+        entry_nombre.pack(padx=40, pady=(4, 16))
+
+        ctk.CTkLabel(ventana, text="Proveedor de Sistema:",
+                     font=font, text_color=col["texto_oscuro"]).pack(anchor="w", padx=40)
+        proveedores = obtener_proveedores_sistemas()
+        valores_prov = proveedores if proveedores else ["⚠ Registre un proveedor tipo Sistemas"]
+        cmb_prov = ctk.CTkComboBox(ventana, values=valores_prov,
+                                    width=400, height=34,
+                                    dropdown_fg_color="#1A3550")
+        cmb_prov.set(proveedor_actual if proveedor_actual in valores_prov else valores_prov[0])
+        cmb_prov.pack(padx=40, pady=(4, 16))
+
+        self._ruta_img_edicion = ""
+        ctk.CTkLabel(ventana, text="Imagen del sistema (opcional):",
+                     font=font, text_color=col["texto_oscuro"]).pack(anchor="w", padx=40)
+        frame_img = ctk.CTkFrame(ventana, fg_color="transparent")
+        frame_img.pack(fill="x", padx=40, pady=(4, 16))
+        lbl_img = ctk.CTkLabel(frame_img,
+                               text=img_actual if img_actual else "Sin imagen seleccionada",
+                               font=font, text_color=col["principal"] if img_actual else "#4A6FA5")
+        lbl_img.pack(side="left", fill="x", expand=True)
+
+        def seleccionar_imagen():
+            ruta = fd.askopenfilename(
+                title="Selecciona imagen del sistema",
+                filetypes=[("Imágenes", "*.png *.jpg *.jpeg *.bmp *.webp")],
+            )
+            if ruta:
+                self._ruta_img_edicion = ruta
+                lbl_img.configure(text=os.path.basename(ruta), text_color=col["principal"])
+
+        ctk.CTkButton(frame_img, text="📁 Buscar", font=font, width=110,
+                      fg_color="#1A3550", hover_color=col["principal_hover"],
+                      text_color=col["texto_oscuro"],
+                      command=seleccionar_imagen).pack(side="right")
+
+        lbl_status = ctk.CTkLabel(ventana, text="", font=font, text_color=col["error"])
+        lbl_status.pack(pady=6)
+
+        def guardar():
+            nombre = entry_nombre.get().strip()
+            proveedor = cmb_prov.get()
+            if not nombre:
+                lbl_status.configure(text="⚠ El nombre del sistema es obligatorio.")
+                return
+            if "⚠" in proveedor:
+                lbl_status.configure(text="⚠ Selecciona un proveedor válido.")
+                return
+            nombre_img = img_actual or ""
+            if self._ruta_img_edicion and os.path.exists(self._ruta_img_edicion):
+                nombre_img = os.path.basename(self._ruta_img_edicion)
+                destino = os.path.join("imagenes", nombre_img)
+                try:
+                    if not os.path.exists(destino):
+                        shutil.copy2(self._ruta_img_edicion, destino)
+                except Exception:
+                    pass
+            try:
+                con = sqlite3.connect(DB_NAME)
+                cur = con.cursor()
+                cur.execute("""
+                    UPDATE modelos_sistemas
+                       SET nombre=?, proveedor=?, nombre_imagen=?
+                     WHERE id=?
+                """, (nombre, proveedor, nombre_img, mid))
+                con.commit()
+                con.close()
+                ventana.destroy()
+                self._refrescar_cuadricula()
+            except sqlite3.IntegrityError:
+                lbl_status.configure(text="⚠ Ya existe un sistema con ese nombre.")
+            except Exception as e:
+                lbl_status.configure(text=f"Error: {e}")
+
+        ctk.CTkButton(
+            ventana, text="💾 GUARDAR CAMBIOS",
+            font=font, width=400, height=42,
+            fg_color=col["principal"], hover_color=col["principal_hover"],
+            text_color="#0A192F", command=guardar,
+        ).pack(pady=10, padx=40)
 
     # ─────────────────────────────────────────────────────────────────────────
     # VENTANA MODAL: CREAR SISTEMA
