@@ -87,6 +87,7 @@ class SubmoduloMaquinas(ctk.CTkFrame):
     def _refrescar_cuadricula(self):
         for w in self._grid_frame.winfo_children():
             w.destroy()
+        self.update_idletasks()
         for i in range(3):
             self._grid_frame.columnconfigure(i, weight=1)
 
