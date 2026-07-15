@@ -346,6 +346,12 @@ class SubmoduloCotizaciones(ctk.CTkFrame):
         _mods_maq    = listar_modelos_maquinas()
         _current_ref = {"id": None, "tipo": "Inventario"}
 
+        # Moneda base por tipo de ítem
+        TIPO_MONEDA = {"Inventario":     "USDT",
+                       "Máquina Fiscal": "USDT",
+                       "Sistema":        "EUR"}
+        SIMB_ITEM = {"USD": "$", "EUR": "€", "USDT": "₮"}
+
         # Tipo → ComboBox SELECCIONABLE (readonly)
         ctk.CTkLabel(add_row, text="Tipo", text_color=col["texto_claro"],
                      font=fnt["normal"]).grid(row=0, column=0,
@@ -374,7 +380,8 @@ class SubmoduloCotizaciones(ctk.CTkFrame):
         e_cant_add.grid(row=1, column=2, padx=4, pady=(0, 8))
         e_cant_add.insert(0, "1")
 
-        ctk.CTkLabel(add_row, text="Precio USD",
+        precio_lbl_var = ctk.StringVar(value="Precio USDT")
+        ctk.CTkLabel(add_row, textvariable=precio_lbl_var,
                      text_color=col["texto_claro"],
                      font=fnt["normal"]).grid(row=0, column=3, sticky="w",
                                               padx=4, pady=(6, 1))
@@ -392,6 +399,7 @@ class SubmoduloCotizaciones(ctk.CTkFrame):
         def _on_tipo_change(tipo):
             _current_ref["tipo"] = tipo
             _current_ref["id"]   = None
+            precio_lbl_var.set(f"Precio {TIPO_MONEDA.get(tipo, 'USD')}")
             if tipo == "Inventario":
                 opts = [f'{it["codigo"]} — {it["nombre"]}' for it in _items_inv]
             elif tipo == "Sistema":
@@ -423,7 +431,7 @@ class SubmoduloCotizaciones(ctk.CTkFrame):
         items_outer = ctk.CTkFrame(body, fg_color="transparent")
         items_outer.pack(fill="x", padx=20, pady=(8, 0))
 
-        IT_COLS   = ["Tipo", "Descripción", "Cant.", "Precio USD", "Subtotal", ""]
+        IT_COLS   = ["Tipo", "Descripción", "Cant.", "Precio", "Subtotal", ""]
         IT_WIDTHS = [100, 350, 60, 100, 100, 38]
         it_hdr = ctk.CTkFrame(items_outer, corner_radius=0,
                               fg_color="#0A192F", height=28)
@@ -484,6 +492,16 @@ class SubmoduloCotizaciones(ctk.CTkFrame):
             t = (_tasas.get(destino, {}) or {}).get("tasa", 0) or 0
             return (total_bs / t) if t > 0 else 0.0
 
+        def _a_usd(precio, moneda_item):
+            """Convierte un precio en su moneda base (USDT/EUR/USD) a USD."""
+            if moneda_item == "USD" or precio <= 0:
+                return precio
+            t_usd = (_tasas.get("USD", {}) or {}).get("tasa", 0) or 0
+            t     = (_tasas.get(moneda_item, {}) or {}).get("tasa", 0) or 0
+            if t_usd <= 0 or t <= 0:
+                return precio
+            return (precio * t) / t_usd   # nativo → Bs → USD
+
         _items_cot = []
         if row_data.get("items"):
             for it in row_data["items"]:
@@ -493,6 +511,7 @@ class SubmoduloCotizaciones(ctk.CTkFrame):
                     "descripcion":     it["descripcion"],
                     "cantidad":        it["cantidad"],
                     "precio_unitario": it["precio_unitario"],
+                    "moneda_item":     TIPO_MONEDA.get(it["tipo"], "USD"),
                 })
 
         def _render_items():
@@ -501,8 +520,10 @@ class SubmoduloCotizaciones(ctk.CTkFrame):
             total = 0.0
             for idx, it in enumerate(_items_cot):
                 bg2 = col["tarjetas"] if idx % 2 == 0 else col["fondo_oscuro"]
+                mon_it  = it.get("moneda_item", "USD")
+                simb_it = SIMB_ITEM.get(mon_it, "$")
                 sub = it["cantidad"] * it["precio_unitario"]
-                total += sub
+                total += it["cantidad"] * _a_usd(it["precio_unitario"], mon_it)
                 fila2 = ctk.CTkFrame(it_body, corner_radius=0,
                                      fg_color=bg2, height=28)
                 fila2.pack(fill="x")
@@ -511,8 +532,8 @@ class SubmoduloCotizaciones(ctk.CTkFrame):
                     it["tipo"],
                     it["descripcion"],
                     f'{it["cantidad"]:.2f}',
-                    f'$ {it["precio_unitario"]:.2f}',
-                    f'$ {sub:.2f}',
+                    f'{simb_it} {it["precio_unitario"]:.2f}',
+                    f'{simb_it} {sub:.2f}',
                 ]
                 for v, w in zip(vals2, IT_WIDTHS[:-1]):
                     ctk.CTkLabel(fila2, text=v, width=w, anchor="center",
@@ -554,6 +575,7 @@ class SubmoduloCotizaciones(ctk.CTkFrame):
                 "descripcion":     desc,
                 "cantidad":        cant,
                 "precio_unitario": prec,
+                "moneda_item":     TIPO_MONEDA.get(tipo, "USD"),
             })
             _render_items()
 
