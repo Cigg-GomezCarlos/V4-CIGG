@@ -490,6 +490,17 @@ def _init_cotizaciones(cur: sqlite3.Cursor):
         )
     """)
 
+def _init_metodos_pago(cur: sqlite3.Cursor):
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS metodos_pago (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            nombre        TEXT    NOT NULL,
+            moneda        TEXT    NOT NULL DEFAULT 'VES',
+            activo        INTEGER NOT NULL DEFAULT 1,
+            observaciones TEXT    DEFAULT ''
+        )
+    """)
+
 def inicializar_todo():
     """
     Inicializa toda la base de datos del sistema.
@@ -506,6 +517,7 @@ def inicializar_todo():
     _init_roles(cur)
     _init_documentos(cur)
     _init_cotizaciones(cur)
+    _init_metodos_pago(cur)
     con.commit()
     con.close()
 
@@ -1423,6 +1435,12 @@ def add_cotizacion(numero, fecha, cliente_id, observaciones,
                 VALUES (?,?,?,?,?,?,?)
             """, (cot_id, it["tipo"], it.get("item_ref_id"),
                   it["descripcion"], it["cantidad"], it["precio_unitario"], sub))
+            # El precio de la cotización actualiza el precio de venta del producto
+            if it.get("tipo") == "Inventario" and it.get("item_ref_id") \
+                    and it.get("precio_unitario", 0) > 0:
+                cur.execute(
+                    "UPDATE items_inventario SET precio_venta=? WHERE id=?",
+                    (it["precio_unitario"], it["item_ref_id"]))
         con.commit()
         con.close()
         return cot_id
@@ -1449,6 +1467,12 @@ def update_cotizacion(cot_id, numero, fecha, cliente_id,
                 VALUES (?,?,?,?,?,?,?)
             """, (cot_id, it["tipo"], it.get("item_ref_id"),
                   it["descripcion"], it["cantidad"], it["precio_unitario"], sub))
+            # El precio de la cotización actualiza el precio de venta del producto
+            if it.get("tipo") == "Inventario" and it.get("item_ref_id") \
+                    and it.get("precio_unitario", 0) > 0:
+                con.execute(
+                    "UPDATE items_inventario SET precio_venta=? WHERE id=?",
+                    (it["precio_unitario"], it["item_ref_id"]))
         con.commit()
         con.close()
         return True
@@ -1466,3 +1490,66 @@ def eliminar_cotizacion(cot_id: int) -> bool:
         return True
     except Exception:
         return False
+
+
+# ---------------------------------------------------------------------------
+# MÉTODOS DE PAGO
+# ---------------------------------------------------------------------------
+
+def listar_metodos_pago(filtro: str = "", moneda: str = "") -> list:
+    """
+    Retorna métodos de pago como dicts.
+    Claves: id, nombre, moneda, activo, observaciones
+    filtro: LIKE sobre nombre; moneda: código exacto ('' = todas).
+    """
+    con = sqlite3.connect(DB_NAME)
+    con.row_factory = sqlite3.Row
+    cur = con.cursor()
+    cond, params = [], []
+    if filtro:
+        cond.append("nombre LIKE ?")
+        params.append(f"%{filtro}%")
+    if moneda:
+        cond.append("moneda = ?")
+        params.append(moneda)
+    where = ("WHERE " + " AND ".join(cond)) if cond else ""
+    cur.execute(f"""
+        SELECT id, nombre, moneda, activo, observaciones
+        FROM metodos_pago
+        {where}
+        ORDER BY nombre ASC
+    """, params)
+    rows = [dict(r) for r in cur.fetchall()]
+    con.close()
+    return rows
+
+
+def guardar_metodo_pago(datos: tuple, metodo_id: int = None):
+    """
+    Inserta o actualiza un método de pago.
+    datos: (nombre, moneda, activo, observaciones)
+    """
+    con = sqlite3.connect(DB_NAME)
+    cur = con.cursor()
+    if metodo_id:
+        cur.execute("""
+            UPDATE metodos_pago SET
+                nombre=?, moneda=?, activo=?, observaciones=?
+            WHERE id=?
+        """, (*datos, metodo_id))
+    else:
+        cur.execute("""
+            INSERT INTO metodos_pago (nombre, moneda, activo, observaciones)
+            VALUES (?, ?, ?, ?)
+        """, datos)
+    con.commit()
+    con.close()
+
+
+def eliminar_metodo_pago(metodo_id: int):
+    """Elimina un método de pago por su ID."""
+    con = sqlite3.connect(DB_NAME)
+    cur = con.cursor()
+    cur.execute("DELETE FROM metodos_pago WHERE id=?", (metodo_id,))
+    con.commit()
+    con.close()

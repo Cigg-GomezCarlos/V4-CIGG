@@ -12,6 +12,7 @@ import customtkinter as ctk
 
 from .sub_venta import SubmoduloVenta
 from .sub_cotizaciones import SubmoduloCotizaciones
+from .sub_metodos_pago import SubmoduloMetodosPago
 from .sub_cxc import SubmoduloCxC
 
 
@@ -36,6 +37,7 @@ class ModuloVentas(ctk.CTkFrame):
         self._submodulos = [
             ("Ventas.Venta",        "🧾 Venta",         SubmoduloVenta),
             ("Ventas.Cotizaciones", "📋 Cotizaciones",  SubmoduloCotizaciones),
+            ("Ventas.MetodosPago",  "💳 Métodos de Pago", SubmoduloMetodosPago),
             ("Ventas.CxC",          "💰 CxC",           SubmoduloCxC),
         ]
 
