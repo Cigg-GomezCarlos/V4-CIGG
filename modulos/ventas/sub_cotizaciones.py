@@ -119,7 +119,7 @@ class SubmoduloCotizaciones(ctk.CTkFrame):
     """Submódulo de Cotizaciones — lista + modal de creación/edición."""
 
     COLS   = ["Número", "Fecha", "Cliente", "Total (USD)", "Estado", ""]
-    WIDTHS = [130, 100, 280, 110, 110, 76]
+    WIDTHS = [130, 100, 280, 110, 110, 118]
 
     ESTADO_COLOR = {
         "Pendiente":  "#F4A261",
@@ -216,12 +216,12 @@ class SubmoduloCotizaciones(ctk.CTkFrame):
                 ctk.CTkLabel(fila, text=v, width=w, anchor="center",
                              text_color=tc, font=fnt["normal"]).pack(side="left")
 
-            btn_f = ctk.CTkFrame(fila, width=76, corner_radius=0,
+            btn_f = ctk.CTkFrame(fila, width=118, corner_radius=0,
                                  fg_color="transparent")
             btn_f.pack(side="left")
             btn_f.pack_propagate(False)
 
-            ctk.CTkButton(btn_f, text="🗑", width=36, height=28,
+            ctk.CTkButton(btn_f, text="🗑", width=34, height=28,
                           fg_color="#1A3550",
                           hover_color=col.get("error", "#E63946"),
                           text_color=col.get("error", "#E63946"),
@@ -233,6 +233,12 @@ class SubmoduloCotizaciones(ctk.CTkFrame):
                           text_color=col["texto_claro"],
                           command=lambda rid=r["id"]: self._abrir_modal(rid)
                           ).pack(side="right", padx=2)
+            ctk.CTkButton(btn_f, text="🖨", width=34, height=28,
+                          fg_color="#1A3550",
+                          hover_color=col["principal"],
+                          text_color=col["principal"],
+                          command=lambda rid=r["id"]: self._imprimir(rid)
+                          ).pack(side="right", padx=2)
 
     # ─── Acciones ─────────────────────────────────────────────────────────────
 
@@ -241,6 +247,17 @@ class SubmoduloCotizaciones(ctk.CTkFrame):
         if messagebox.askyesno("Eliminar", "¿Eliminar esta cotización?"):
             eliminar_cotizacion(rid)
             self.cargar_datos(self.busq_var.get())
+
+    def _imprimir(self, rid):
+        """Genera el documento de la cotización y lo abre en el navegador."""
+        try:
+            from .impresion import imprimir_cotizacion
+            if not imprimir_cotizacion(rid):
+                messagebox.showerror(
+                    "Imprimir", "No se pudo generar el documento.")
+        except Exception as e:
+            messagebox.showerror("Imprimir",
+                                 f"No se pudo generar el documento:\n{e}")
 
     # ─── MODAL ────────────────────────────────────────────────────────────────
 
@@ -619,26 +636,32 @@ class SubmoduloCotizaciones(ctk.CTkFrame):
                     cli_id = match["id"]
 
             usuario = get_usuario_actual() or ""
+            nuevo_id = cot_id
             try:
                 if cot_id:
                     ok = update_cotizacion(cot_id, num, fecha, cli_id,
                                            obs, estado, _items_cot, moneda)
                 else:
-                    ok = add_cotizacion(num, fecha, cli_id, obs,
-                                        estado, usuario, _items_cot, moneda) > 0
+                    nuevo_id = add_cotizacion(num, fecha, cli_id, obs,
+                                              estado, usuario, _items_cot, moneda)
+                    ok = nuevo_id > 0
             except TypeError:
                 # compatibilidad con firmas sin 'moneda'
                 if cot_id:
                     ok = update_cotizacion(cot_id, num, fecha, cli_id,
                                            obs, estado, _items_cot)
                 else:
-                    ok = add_cotizacion(num, fecha, cli_id, obs,
-                                        estado, usuario, _items_cot) > 0
+                    nuevo_id = add_cotizacion(num, fecha, cli_id, obs,
+                                              estado, usuario, _items_cot)
+                    ok = nuevo_id > 0
             if not ok:
                 err_lbl.configure(text="Error al guardar. ¿Número duplicado?")
                 return
             modal.destroy()
             self.cargar_datos(self.busq_var.get())
+            # Genera el documento e invita a imprimir
+            if nuevo_id and nuevo_id > 0:
+                self._imprimir(nuevo_id)
 
         ctk.CTkButton(footer, text="💾 Guardar Cotización",
                       fg_color=col["principal"], text_color="#0A192F",
