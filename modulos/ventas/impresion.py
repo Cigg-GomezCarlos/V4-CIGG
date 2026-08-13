@@ -17,7 +17,9 @@ import tempfile
 import datetime
 import webbrowser
 
-# ── Datos de la empresa (edítalos aquí si cambian) ──────────────────────────
+# ── Datos de la empresa ─────────────────────────────────────────────────────
+# Se cargan desde la BD (módulo Archivos → Empresa). Este dict es sólo el
+# respaldo por defecto si la BD aún no tiene datos.
 EMPRESA = {
     "nombre":    "CIGG SYSTEMS",
     "eslogan":   "Tech & Cyber Security",
@@ -25,7 +27,23 @@ EMPRESA = {
     "direccion": "",
     "telefono":  "",
     "correo":    "",
+    "ciudad":    "Caracas",
+    "logo_path": "",
 }
+
+
+def _get_empresa() -> dict:
+    """Lee los datos de empresa desde la BD; usa EMPRESA como respaldo."""
+    try:
+        from core.database import obtener_empresa
+        datos = obtener_empresa() or {}
+    except Exception:
+        datos = {}
+    base = dict(EMPRESA)
+    for k, v in datos.items():
+        if v not in (None, ""):
+            base[k] = v
+    return base
 
 _SIMB = {"USD": "$", "USDT": "USDT", "EUR": "EUR", "VES": "Bs", "Bs": "Bs"}
 
@@ -65,16 +83,30 @@ def _convertir(total_usd, destino, tasas):
     return (total_bs / t) if t > 0 else 0.0
 
 
-def _logo_base64() -> str:
-    """Devuelve el logo como data-URI base64, o cadena vacía si no existe."""
+def _logo_base64(logo_path: str = "") -> str:
+    """Devuelve el logo como data-URI base64, o cadena vacía si no existe.
+
+    Prioriza el logo configurado por la empresa (logo_path); si no existe o
+    no está definido, usa imagenes/logo_completo.png por compatibilidad.
+    """
     base = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    ruta = os.path.join(base, "imagenes", "logo_completo.png")
-    try:
-        with open(ruta, "rb") as f:
-            b64 = base64.b64encode(f.read()).decode("ascii")
-        return f"data:image/png;base64,{b64}"
-    except Exception:
-        return ""
+    candidatas = []
+    if logo_path:
+        candidatas.append(logo_path)
+        candidatas.append(os.path.join(base, "imagenes", logo_path))
+    candidatas.append(os.path.join(base, "imagenes", "logo_completo.png"))
+
+    for ruta in candidatas:
+        try:
+            with open(ruta, "rb") as f:
+                b64 = base64.b64encode(f.read()).decode("ascii")
+            ext = os.path.splitext(ruta)[1].lower().lstrip(".") or "png"
+            if ext == "jpg":
+                ext = "jpeg"
+            return f"data:image/{ext};base64,{b64}"
+        except Exception:
+            continue
+    return ""
 
 
 def _fmt(n, simbolo="$"):
@@ -89,10 +121,11 @@ def construir_html(data: dict) -> str:
     if not data:
         return "<html><body><h2>Cotizacion no encontrada.</h2></body></html>"
 
+    EMPRESA = _get_empresa()
     base    = data.get("moneda") or "USD"
     simbolo = MON_SIMB.get(base, "$")
     tasas   = _cargar_tasas()
-    logo    = _logo_base64()
+    logo    = _logo_base64(EMPRESA.get("logo_path", ""))
     items   = data.get("items", [])
 
     filas = ""
@@ -256,4 +289,265 @@ def imprimir_cotizacion(cot_id: int) -> bool:
         return True
     except Exception as e:
         print(f"[impresion] Error al generar cotizacion: {e}")
+        return False
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  VENTAS  —  factura + pagos + plan de cuotas
+# ══════════════════════════════════════════════════════════════════════
+def _fila_item_venta(it, tasas):
+    """Devuelve (html_fila, subtotal_usd) para un ítem de venta."""
+    mon  = it.get("moneda_item", "USD")
+    simb = SIMB_ITEM.get(mon, "$")
+    cant = it.get("cantidad", 1) or 1
+    pu   = it.get("precio_unitario", 0) or 0
+    sub  = it.get("subtotal", cant * pu) or 0
+    sub_usd = _a_usd(sub, mon, tasas)
+    fila = (
+        "<tr>"
+        f"<td>{it.get('descripcion','')}</td>"
+        f"<td style='text-align:center'>{it.get('tipo','')}</td>"
+        f"<td style='text-align:center'>{_fmt(cant,'')}</td>"
+        f"<td style='text-align:right'>{_fmt(pu, simb)}</td>"
+        f"<td style='text-align:right'>{_fmt(sub, simb)}</td>"
+        "</tr>"
+    )
+    return fila, sub_usd
+
+
+def construir_html_venta(data: dict) -> str:
+    """HTML de la factura de venta (ítems + pagos + plan de cuotas)."""
+    EMPRESA = _get_empresa()
+    tasas   = _cargar_tasas()
+    moneda  = data.get("moneda", "USD")
+    simb_m  = MON_SIMB.get(moneda, "$")
+    logo    = _logo_base64(EMPRESA.get("logo_path", ""))
+
+    filas, total_usd = [], 0.0
+    for it in data.get("items", []):
+        f, sub_usd = _fila_item_venta(it, tasas)
+        filas.append(f)
+        total_usd += sub_usd
+    total_dest = _convertir(total_usd, moneda, tasas)
+
+    # Pagos recibidos
+    filas_pago = []
+    for p in data.get("pagos", []):
+        pm  = p.get("moneda", "USD")
+        sp  = MON_SIMB.get(pm, "$")
+        filas_pago.append(
+            "<tr>"
+            f"<td>{p.get('metodo_nombre','')}</td>"
+            f"<td style='text-align:center'>{pm}</td>"
+            f"<td style='text-align:right'>{_fmt(p.get('monto',0), sp)}</td>"
+            "</tr>"
+        )
+    bloque_pagos = ""
+    if filas_pago:
+        bloque_pagos = (
+            "<h3>Pagos recibidos</h3>"
+            "<table><thead><tr>"
+            "<th>Método</th><th style='text-align:center'>Moneda</th>"
+            "<th style='text-align:right'>Monto</th>"
+            "</tr></thead><tbody>" + "".join(filas_pago) + "</tbody></table>"
+        )
+
+    # Plan de cuotas (crédito) — en la moneda propia del crédito
+    bloque_cuotas = ""
+    moneda_cred = data.get("moneda_credito") or moneda
+    simb_c      = MON_SIMB.get(moneda_cred, simb_m)
+    if data.get("condicion", "").lower().startswith("cr") and data.get("cuotas"):
+        filas_c = []
+        for c in data["cuotas"]:
+            filas_c.append(
+                "<tr>"
+                f"<td style='text-align:center'>{c.get('numero_cuota','')}</td>"
+                f"<td style='text-align:center'>{c.get('fecha_venc','')}</td>"
+                f"<td style='text-align:right'>{_fmt(c.get('monto',0), simb_c)}</td>"
+                "</tr>"
+            )
+        ini = data.get("inicial", 0) or 0
+        bloque_cuotas = (
+            "<h3>Plan de pago (Crédito)</h3>"
+            f"<p><b>Cuota inicial:</b> {_fmt(ini, simb_c)} ({moneda_cred}) &nbsp;·&nbsp; "
+            f"<b>N° de cuotas:</b> {data.get('num_cuotas',0)} &nbsp;·&nbsp; "
+            f"<b>Frecuencia:</b> {data.get('dias_frecuencia',0)} días &nbsp;·&nbsp; "
+            f"<b>Primera cuota:</b> {data.get('fecha_primera_cuota','')}</p>"
+            "<table><thead><tr>"
+            "<th style='text-align:center'>Cuota</th>"
+            "<th style='text-align:center'>Vencimiento</th>"
+            "<th style='text-align:right'>Monto</th>"
+            "</tr></thead><tbody>" + "".join(filas_c) + "</tbody></table>"
+        )
+
+    # Equivalencias del total
+    eqs = []
+    for m in ("USD", "EUR", "USDT", "VES"):
+        if m == moneda:
+            continue
+        val = _convertir(total_usd, m, tasas)
+        if val:
+            eqs.append(f"<span>{MON_SIMB.get(m,'')} {val:,.2f}</span>")
+    bloque_eq = ("<div class='equiv'><b>Equivalencias:</b> " +
+                 " &nbsp;|&nbsp; ".join(eqs) + "</div>") if eqs else ""
+
+    img = f"<img src='{logo}' style='height:70px'>" if logo else ""
+    return f"""<!DOCTYPE html><html><head><meta charset='utf-8'>
+<title>Venta {data.get('numero','')}</title>
+<style>
+ body{{font-family:Arial,Helvetica,sans-serif;color:#0A192F;margin:32px;}}
+ .hd{{display:flex;justify-content:space-between;align-items:center;
+      border-bottom:3px solid #00A9B5;padding-bottom:10px;margin-bottom:16px;}}
+ .emp b{{font-size:20px;}} .emp span{{color:#555;font-size:12px;}}
+ h2{{margin:4px 0;}} h3{{margin-top:22px;color:#0A6E78;
+     border-bottom:1px solid #ccc;padding-bottom:4px;}}
+ table{{width:100%;border-collapse:collapse;margin-top:8px;font-size:13px;}}
+ th,td{{border:1px solid #ccc;padding:6px 8px;}}
+ thead th{{background:#0A192F;color:#fff;}}
+ .tot{{text-align:right;font-size:18px;font-weight:bold;margin-top:14px;}}
+ .equiv{{margin-top:8px;font-size:12px;color:#333;background:#f2f7f8;
+         padding:8px;border-radius:6px;}}
+ .datos{{font-size:13px;color:#333;margin-bottom:10px;}}
+ @media print{{button{{display:none;}}}}
+</style></head><body>
+<div class='hd'>
+ <div class='emp'><b>{EMPRESA['nombre']}</b><br><span>{EMPRESA['eslogan']}</span>
+  {('<br><span>RIF: '+EMPRESA['rif']+'</span>') if EMPRESA.get('rif') else ''}
+  {('<br><span>'+EMPRESA['direccion']+'</span>') if EMPRESA.get('direccion') else ''}
+  {('<br><span>Tel: '+EMPRESA['telefono']+'</span>') if EMPRESA.get('telefono') else ''}
+  {('<br><span>'+EMPRESA['correo']+'</span>') if EMPRESA.get('correo') else ''}</div>
+ <div style='text-align:right'>{img}<br>
+  <b>NOTA DE VENTA</b><br>N° {data.get('numero','')}<br>{data.get('fecha','')}</div>
+</div>
+<div class='datos'>
+ <b>Cliente:</b> {data.get('cliente_nombre','')} &nbsp; 
+ <b>RIF:</b> {data.get('cliente_rif','')}<br>
+ {('<b>Dirección:</b> '+data.get('cliente_dir','')+'<br>') if data.get('cliente_dir') else ''}
+ <b>Condición:</b> {data.get('condicion','Contado')} &nbsp; 
+ <b>Estado:</b> {data.get('estado','')}
+</div>
+<table><thead><tr>
+ <th>Descripción</th><th style='text-align:center'>Tipo</th>
+ <th style='text-align:center'>Cant.</th>
+ <th style='text-align:right'>P. Unit.</th>
+ <th style='text-align:right'>Subtotal</th>
+</tr></thead><tbody>{''.join(filas)}</tbody></table>
+<div class='tot'>TOTAL: {_fmt(total_dest, simb_m)} ({moneda})</div>
+{bloque_eq}
+{bloque_pagos}
+{bloque_cuotas}
+<div style='margin-top:24px'><button onclick='window.print()'>Imprimir</button></div>
+</body></html>"""
+
+
+def imprimir_venta(venta_id: int) -> bool:
+    """Genera el HTML de la venta y lo abre en el navegador."""
+    try:
+        from core.database import get_venta_completa
+        data = get_venta_completa(venta_id)
+        if not data:
+            print(f"[impresion] Venta {venta_id} no encontrada")
+            return False
+        html = construir_html_venta(data)
+        num  = (data.get("numero") or f"VTA-{venta_id}").replace("/", "-")
+        ruta = os.path.join(tempfile.gettempdir(), f"venta_{num}.html")
+        with open(ruta, "w", encoding="utf-8") as f:
+            f.write(html)
+        webbrowser.open("file://" + os.path.abspath(ruta))
+        return True
+    except Exception as e:
+        print(f"[impresion] Error al generar venta: {e}")
+        return False
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  CONTRATO DE COMPROMISO DE PAGO  (plantilla editable + placeholders)
+# ══════════════════════════════════════════════════════════════════════
+def _plan_pagos_texto(data, simb_m):
+    """Texto plano del plan de cuotas para insertar en el contrato."""
+    if not data.get("cuotas"):
+        return "(Sin cuotas registradas)"
+    lineas = []
+    for c in data["cuotas"]:
+        lineas.append(
+            f"  Cuota {c.get('numero_cuota','')}: "
+            f"{c.get('fecha_venc','')}  -  {simb_m} {float(c.get('monto',0)):,.2f}"
+        )
+    return "\n".join(lineas)
+
+
+def construir_html_contrato_pago(data: dict) -> str:
+    """Rellena la plantilla editable del contrato con los datos de la venta."""
+    from core.database import obtener_contrato_pago
+    plantilla = obtener_contrato_pago()
+
+    EMPRESA = _get_empresa()
+    tasas  = _cargar_tasas()
+    moneda = data.get("moneda", "USD")
+    simb_m = MON_SIMB.get(moneda, "$")
+
+    # Total en la moneda de la venta
+    total_usd = 0.0
+    for it in data.get("items", []):
+        total_usd += _a_usd(it.get("subtotal", 0) or 0,
+                            it.get("moneda_item", "USD"), tasas)
+    total_dest = _convertir(total_usd, moneda, tasas)
+
+    # Moneda propia del crédito (inicial / cuotas)
+    moneda_cred = data.get("moneda_credito") or moneda
+    simb_c      = MON_SIMB.get(moneda_cred, simb_m)
+
+    repl = {
+        "[EMPRESA_NOMBRE]":      EMPRESA.get("nombre", ""),
+        "[EMPRESA_RIF]":         EMPRESA.get("rif", ""),
+        "[CLIENTE_NOMBRE]":      data.get("cliente_nombre", ""),
+        "[CLIENTE_RIF]":         data.get("cliente_rif", ""),
+        "[CLIENTE_DIR]":         data.get("cliente_dir", ""),
+        "[VENTA_NUMERO]":        data.get("numero", ""),
+        "[VENTA_FECHA]":         data.get("fecha", ""),
+        "[VENTA_TOTAL]":         f"{simb_m} {total_dest:,.2f} ({moneda})",
+        "[INICIAL]":             f"{simb_c} {float(data.get('inicial',0) or 0):,.2f} ({moneda_cred})",
+        "[NUM_CUOTAS]":          str(data.get("num_cuotas", 0) or 0),
+        "[MONTO_CUOTA]":         f"{simb_c} {float(data.get('monto_cuota',0) or 0):,.2f} ({moneda_cred})",
+        "[DIAS_FRECUENCIA]":     str(data.get("dias_frecuencia", 0) or 0),
+        "[FECHA_PRIMERA_CUOTA]": data.get("fecha_primera_cuota", ""),
+        "[PLAN_PAGOS]":          _plan_pagos_texto(data, simb_c),
+        "[CIUDAD]":              EMPRESA.get("ciudad", "Caracas"),
+    }
+    texto = plantilla
+    for k, v in repl.items():
+        texto = texto.replace(k, str(v))
+
+    import html as _html
+    cuerpo = _html.escape(texto)
+    return f"""<!DOCTYPE html><html><head><meta charset='utf-8'>
+<title>Contrato de pago {data.get('numero','')}</title>
+<style>
+ body{{font-family:'Times New Roman',serif;color:#111;margin:48px auto;
+      max-width:820px;line-height:1.6;}}
+ pre{{white-space:pre-wrap;font-family:inherit;font-size:15px;}}
+ @media print{{button{{display:none;}}}}
+</style></head><body>
+<pre>{cuerpo}</pre>
+<div style='margin-top:24px'><button onclick='window.print()'>Imprimir</button></div>
+</body></html>"""
+
+
+def imprimir_contrato_pago(venta_id: int) -> bool:
+    """Genera el contrato de compromiso de pago y lo abre en el navegador."""
+    try:
+        from core.database import get_venta_completa
+        data = get_venta_completa(venta_id)
+        if not data:
+            print(f"[impresion] Venta {venta_id} no encontrada")
+            return False
+        html = construir_html_contrato_pago(data)
+        num  = (data.get("numero") or f"VTA-{venta_id}").replace("/", "-")
+        ruta = os.path.join(tempfile.gettempdir(), f"contrato_{num}.html")
+        with open(ruta, "w", encoding="utf-8") as f:
+            f.write(html)
+        webbrowser.open("file://" + os.path.abspath(ruta))
+        return True
+    except Exception as e:
+        print(f"[impresion] Error al generar contrato de pago: {e}")
         return False

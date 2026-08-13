@@ -14,6 +14,67 @@ import datetime
 from tkinter import messagebox
 
 
+def _trunc(texto, width_px):
+    """Recorta el texto con '…' para que no exceda el ancho de su columna
+    (evita que un nombre largo desalinee toda la tabla)."""
+    s = str(texto or "")
+    max_chars = max(4, int(width_px / 7.5))
+    if len(s) > max_chars:
+        return s[:max_chars - 1].rstrip() + "…"
+    return s
+
+
+class _ToolTip:
+    """Muestra el texto completo en un globo al pasar el cursor."""
+    _tip = None
+
+    def __init__(self, widget, text):
+        self.widget = widget
+        self.text = text
+        widget.bind("<Enter>", self._show, add="+")
+        widget.bind("<Leave>", self._hide, add="+")
+
+    def _show(self, _=None):
+        import tkinter as tk
+        if _ToolTip._tip is not None:
+            return
+        try:
+            x = self.widget.winfo_rootx() + 12
+            y = self.widget.winfo_rooty() + self.widget.winfo_height() + 4
+            tip = tk.Toplevel(self.widget)
+            tip.wm_overrideredirect(True)
+            tip.wm_geometry(f"+{x}+{y}")
+            tk.Label(tip, text=self.text, justify="left",
+                     bg="#0A192F", fg="#E2E8F0", relief="solid", borderwidth=1,
+                     font=("Segoe UI", 9), padx=6, pady=3).pack()
+            _ToolTip._tip = tip
+        except Exception:
+            pass
+
+    def _hide(self, _=None):
+        if _ToolTip._tip is not None:
+            try:
+                _ToolTip._tip.destroy()
+            except Exception:
+                pass
+            _ToolTip._tip = None
+
+
+def _cell(parent, full_text, width, height, text_color, font):
+    """Celda de ancho fijo con texto truncado + tooltip del texto completo."""
+    disp = _trunc(full_text, width)
+    frame = ctk.CTkFrame(parent, width=width, height=height, corner_radius=0,
+                         fg_color="transparent")
+    frame.pack(side="left")
+    frame.pack_propagate(False)
+    lbl = ctk.CTkLabel(frame, text=disp, anchor="center",
+                       text_color=text_color, font=font)
+    lbl.pack(fill="both", expand=True)
+    if disp != str(full_text or ""):
+        _ToolTip(lbl, str(full_text))
+    return frame
+
+
 # ─── Entry con autocompletado (filtra mientras escribes) ───────────────────────
 
 class AutocompleteEntry(ctk.CTkFrame):
@@ -213,8 +274,7 @@ class SubmoduloCotizaciones(ctk.CTkFrame):
                 (r["estado"],           estado_c),
             ]
             for (v, tc), w in zip(vals, self.WIDTHS[:-1]):
-                ctk.CTkLabel(fila, text=v, width=w, anchor="center",
-                             text_color=tc, font=fnt["normal"]).pack(side="left")
+                _cell(fila, v, w, 34, tc, fnt["normal"])
 
             btn_f = ctk.CTkFrame(fila, width=118, corner_radius=0,
                                  fg_color="transparent")
@@ -274,8 +334,11 @@ class SubmoduloCotizaciones(ctk.CTkFrame):
         modal = ctk.CTkToplevel(self)
         modal.title("Editar Cotización" if cot_id else "Nueva Cotización")
         modal.geometry("920x720")
-        modal.grab_set()
         modal.configure(fg_color=col["fondo_oscuro"])
+        modal.transient(self.winfo_toplevel())
+        modal.lift()
+        modal.after(60, lambda: (modal.lift(), modal.focus_force(),
+                                 modal.grab_set()))
 
         # ══ FOOTER FIJO (siempre visible) — se crea PRIMERO y se ancla abajo ══
         footer = ctk.CTkFrame(modal, height=64, corner_radius=0,
@@ -553,9 +616,7 @@ class SubmoduloCotizaciones(ctk.CTkFrame):
                     f'{simb_it} {sub:.2f}',
                 ]
                 for v, w in zip(vals2, IT_WIDTHS[:-1]):
-                    ctk.CTkLabel(fila2, text=v, width=w, anchor="center",
-                                 text_color=col["texto_claro"],
-                                 font=fnt["normal"]).pack(side="left")
+                    _cell(fila2, v, w, 28, col["texto_claro"], fnt["normal"])
                 ctk.CTkButton(fila2, text="🗑", width=34, height=22,
                               fg_color="transparent",
                               hover_color=col.get("error", "#E63946"),

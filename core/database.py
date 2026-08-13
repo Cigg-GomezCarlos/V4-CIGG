@@ -501,6 +501,101 @@ def _init_metodos_pago(cur: sqlite3.Cursor):
         )
     """)
 
+def _init_ventas(cur: sqlite3.Cursor):
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS ventas (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            numero              TEXT    UNIQUE NOT NULL,
+            fecha               TEXT    NOT NULL,
+            cliente_id          INTEGER,
+            observaciones       TEXT    DEFAULT '',
+            estado              TEXT    DEFAULT 'Emitida',
+            usuario             TEXT    DEFAULT '',
+            total               REAL    DEFAULT 0,
+            moneda              TEXT    DEFAULT 'USD',
+            condicion           TEXT    DEFAULT 'Contado',
+            inicial             REAL    DEFAULT 0,
+            num_cuotas          INTEGER DEFAULT 0,
+            monto_cuota         REAL    DEFAULT 0,
+            dias_frecuencia     INTEGER DEFAULT 0,
+            fecha_primera_cuota TEXT    DEFAULT ''
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS venta_items (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            venta_id        INTEGER NOT NULL REFERENCES ventas(id) ON DELETE CASCADE,
+            tipo            TEXT    NOT NULL,
+            item_ref_id     INTEGER,
+            descripcion     TEXT    NOT NULL,
+            cantidad        REAL    NOT NULL DEFAULT 1,
+            precio_unitario REAL    NOT NULL DEFAULT 0,
+            subtotal        REAL    NOT NULL DEFAULT 0,
+            moneda_item     TEXT    DEFAULT 'USD'
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS venta_pagos (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            venta_id       INTEGER NOT NULL REFERENCES ventas(id) ON DELETE CASCADE,
+            metodo_pago_id INTEGER,
+            metodo_nombre  TEXT    DEFAULT '',
+            moneda         TEXT    DEFAULT 'USD',
+            monto          REAL    NOT NULL DEFAULT 0
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS venta_cuotas (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            venta_id     INTEGER NOT NULL REFERENCES ventas(id) ON DELETE CASCADE,
+            numero_cuota INTEGER,
+            fecha_venc   TEXT    DEFAULT '',
+            monto        REAL    DEFAULT 0
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS venta_abonos (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            venta_id      INTEGER NOT NULL REFERENCES ventas(id) ON DELETE CASCADE,
+            cuota_id      INTEGER,
+            fecha         TEXT    DEFAULT '',
+            monto         REAL    DEFAULT 0,
+            moneda        TEXT    DEFAULT 'USD',
+            monto_credito REAL    DEFAULT 0,
+            metodo_nombre TEXT    DEFAULT '',
+            usuario       TEXT    DEFAULT '',
+            observaciones TEXT    DEFAULT ''
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS doc_contrato_pago (
+            id        INTEGER PRIMARY KEY CHECK (id = 1),
+            contenido TEXT    DEFAULT '',
+            fecha_mod TEXT    DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    # Datos de la empresa (una sola fila) que salen en facturas/cotizaciones.
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS config_empresa (
+            id        INTEGER PRIMARY KEY CHECK (id = 1),
+            nombre    TEXT DEFAULT '',
+            eslogan   TEXT DEFAULT '',
+            rif       TEXT DEFAULT '',
+            direccion TEXT DEFAULT '',
+            telefono  TEXT DEFAULT '',
+            correo    TEXT DEFAULT '',
+            ciudad    TEXT DEFAULT 'Caracas',
+            logo_path TEXT DEFAULT '',
+            fecha_mod TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    # Migración: moneda en que se generan la inicial y las cuotas de crédito.
+    cur.execute("PRAGMA table_info(ventas)")
+    _vcols = {r[1] for r in cur.fetchall()}
+    if "moneda_credito" not in _vcols:
+        cur.execute("ALTER TABLE ventas ADD COLUMN moneda_credito TEXT DEFAULT ''")
+
+
 def inicializar_todo():
     """
     Inicializa toda la base de datos del sistema.
@@ -518,6 +613,7 @@ def inicializar_todo():
     _init_documentos(cur)
     _init_cotizaciones(cur)
     _init_metodos_pago(cur)
+    _init_ventas(cur)
     con.commit()
     con.close()
 
@@ -1551,5 +1647,426 @@ def eliminar_metodo_pago(metodo_id: int):
     con = sqlite3.connect(DB_NAME)
     cur = con.cursor()
     cur.execute("DELETE FROM metodos_pago WHERE id=?", (metodo_id,))
+    con.commit()
+    con.close()
+
+
+# ---------------------------------------------------------------------------
+# VENTAS
+# ---------------------------------------------------------------------------
+
+def get_next_venta_numero() -> str:
+    import datetime
+    con = sqlite3.connect(DB_NAME)
+    year = datetime.date.today().year
+    row = con.execute(
+        "SELECT COUNT(*) FROM ventas WHERE numero LIKE ?",
+        (f"VEN-{year}-%",)
+    ).fetchone()
+    con.close()
+    n = (row[0] if row else 0) + 1
+    return f"VEN-{year}-{n:04d}"
+
+
+def listar_ventas(filtro: str = "") -> list:
+    con = sqlite3.connect(DB_NAME)
+    con.row_factory = sqlite3.Row
+    q = """
+        SELECT v.id, v.numero, v.fecha, v.estado, v.total, v.moneda,
+               v.condicion, v.usuario,
+               COALESCE(cl.razon_social, '(Sin cliente)') AS cliente_nombre,
+               COALESCE(cl.rif, '') AS cliente_rif
+        FROM ventas v
+        LEFT JOIN clientes cl ON cl.id = v.cliente_id
+    """
+    params = ()
+    if filtro:
+        q += (" WHERE v.numero LIKE ? OR cl.razon_social LIKE ? "
+              "OR cl.rif LIKE ? OR v.condicion LIKE ?")
+        f = f"%{filtro}%"
+        params = (f, f, f, f)
+    q += " ORDER BY v.id DESC"
+    rows = [dict(r) for r in con.execute(q, params).fetchall()]
+    con.close()
+    return rows
+
+
+def get_venta_completa(venta_id: int) -> dict:
+    con = sqlite3.connect(DB_NAME)
+    con.row_factory = sqlite3.Row
+    row = con.execute("""
+        SELECT v.*, COALESCE(cl.razon_social,'') AS cliente_nombre,
+               COALESCE(cl.rif,'') AS cliente_rif,
+               COALESCE(cl.direccion_fiscal,'') AS cliente_dir,
+               COALESCE(cl.telefono,'') AS cliente_tel,
+               COALESCE(cl.correo,'') AS cliente_correo
+        FROM ventas v
+        LEFT JOIN clientes cl ON cl.id = v.cliente_id
+        WHERE v.id = ?
+    """, (venta_id,)).fetchone()
+    if not row:
+        con.close()
+        return {}
+    data = dict(row)
+    data["items"] = [dict(r) for r in con.execute(
+        "SELECT * FROM venta_items WHERE venta_id=? ORDER BY id", (venta_id,)
+    ).fetchall()]
+    data["pagos"] = [dict(r) for r in con.execute(
+        "SELECT * FROM venta_pagos WHERE venta_id=? ORDER BY id", (venta_id,)
+    ).fetchall()]
+    data["cuotas"] = [dict(r) for r in con.execute(
+        "SELECT * FROM venta_cuotas WHERE venta_id=? ORDER BY numero_cuota",
+        (venta_id,)
+    ).fetchall()]
+    con.close()
+    return data
+
+
+def _venta_write_hijos(cur, venta_id, items, pagos, cuotas):
+    """Inserta items/pagos/cuotas de una venta y actualiza precio_venta."""
+    for it in items:
+        sub = round(it["cantidad"] * it["precio_unitario"], 4)
+        cur.execute("""
+            INSERT INTO venta_items
+                (venta_id,tipo,item_ref_id,descripcion,cantidad,
+                 precio_unitario,subtotal,moneda_item)
+            VALUES (?,?,?,?,?,?,?,?)
+        """, (venta_id, it["tipo"], it.get("item_ref_id"),
+              it["descripcion"], it["cantidad"], it["precio_unitario"],
+              sub, it.get("moneda_item", "USD")))
+        # El precio de la venta actualiza el precio de venta del producto
+        if it.get("tipo") == "Inventario" and it.get("item_ref_id") \
+                and it.get("precio_unitario", 0) > 0:
+            cur.execute("UPDATE items_inventario SET precio_venta=? WHERE id=?",
+                        (it["precio_unitario"], it["item_ref_id"]))
+    for p in pagos:
+        cur.execute("""
+            INSERT INTO venta_pagos
+                (venta_id,metodo_pago_id,metodo_nombre,moneda,monto)
+            VALUES (?,?,?,?,?)
+        """, (venta_id, p.get("metodo_pago_id"), p.get("metodo_nombre", ""),
+              p.get("moneda", "USD"), p.get("monto", 0)))
+    for c in cuotas:
+        cur.execute("""
+            INSERT INTO venta_cuotas (venta_id,numero_cuota,fecha_venc,monto)
+            VALUES (?,?,?,?)
+        """, (venta_id, c.get("numero_cuota"), c.get("fecha_venc", ""),
+              c.get("monto", 0)))
+
+
+def add_venta(data: dict, items: list, pagos: list, cuotas: list) -> int:
+    """
+    data: numero,fecha,cliente_id,observaciones,estado,usuario,total,moneda,
+          condicion,inicial,num_cuotas,monto_cuota,dias_frecuencia,fecha_primera_cuota
+    """
+    try:
+        con = sqlite3.connect(DB_NAME)
+        cur = con.cursor()
+        cur.execute("""
+            INSERT INTO ventas
+                (numero,fecha,cliente_id,observaciones,estado,usuario,total,
+                 moneda,condicion,inicial,num_cuotas,monto_cuota,
+                 dias_frecuencia,fecha_primera_cuota,moneda_credito)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """, (data["numero"], data["fecha"], data.get("cliente_id"),
+              data.get("observaciones", ""), data.get("estado", "Emitida"),
+              data.get("usuario", ""), data.get("total", 0),
+              data.get("moneda", "USD"), data.get("condicion", "Contado"),
+              data.get("inicial", 0), data.get("num_cuotas", 0),
+              data.get("monto_cuota", 0), data.get("dias_frecuencia", 0),
+              data.get("fecha_primera_cuota", ""),
+              data.get("moneda_credito", data.get("moneda", "USD"))))
+        venta_id = cur.lastrowid
+        _venta_write_hijos(cur, venta_id, items, pagos, cuotas)
+        con.commit()
+        con.close()
+        return venta_id
+    except Exception:
+        return -1
+
+
+def update_venta(venta_id: int, data: dict, items: list,
+                 pagos: list, cuotas: list) -> bool:
+    try:
+        con = sqlite3.connect(DB_NAME)
+        cur = con.cursor()
+        cur.execute("""
+            UPDATE ventas SET
+                numero=?,fecha=?,cliente_id=?,observaciones=?,estado=?,
+                total=?,moneda=?,condicion=?,inicial=?,num_cuotas=?,
+                monto_cuota=?,dias_frecuencia=?,fecha_primera_cuota=?,
+                moneda_credito=?
+            WHERE id=?
+        """, (data["numero"], data["fecha"], data.get("cliente_id"),
+              data.get("observaciones", ""), data.get("estado", "Emitida"),
+              data.get("total", 0), data.get("moneda", "USD"),
+              data.get("condicion", "Contado"), data.get("inicial", 0),
+              data.get("num_cuotas", 0), data.get("monto_cuota", 0),
+              data.get("dias_frecuencia", 0),
+              data.get("fecha_primera_cuota", ""),
+              data.get("moneda_credito", data.get("moneda", "USD")), venta_id))
+        cur.execute("DELETE FROM venta_items WHERE venta_id=?", (venta_id,))
+        cur.execute("DELETE FROM venta_pagos WHERE venta_id=?", (venta_id,))
+        cur.execute("DELETE FROM venta_cuotas WHERE venta_id=?", (venta_id,))
+        _venta_write_hijos(cur, venta_id, items, pagos, cuotas)
+        con.commit()
+        con.close()
+        return True
+    except Exception:
+        return False
+
+
+def eliminar_venta(venta_id: int) -> bool:
+    try:
+        con = sqlite3.connect(DB_NAME)
+        con.execute("DELETE FROM venta_items WHERE venta_id=?", (venta_id,))
+        con.execute("DELETE FROM venta_pagos WHERE venta_id=?", (venta_id,))
+        con.execute("DELETE FROM venta_cuotas WHERE venta_id=?", (venta_id,))
+        con.execute("DELETE FROM venta_abonos WHERE venta_id=?", (venta_id,))
+        con.execute("DELETE FROM ventas WHERE id=?", (venta_id,))
+        con.commit()
+        con.close()
+        return True
+    except Exception:
+        return False
+
+
+# ── Cuentas por Cobrar (CxC) ────────────────────────────────────────────────
+def listar_cxc(filtro: str = "", solo_pendientes: bool = False) -> list:
+    """
+    Devuelve las ventas a crédito con su total financiado (suma de cuotas),
+    lo abonado y el saldo pendiente, todo en la moneda de crédito de la venta.
+    """
+    con = sqlite3.connect(DB_NAME)
+    con.row_factory = sqlite3.Row
+    q = """
+        SELECT v.id, v.numero, v.fecha, v.estado, v.condicion,
+               v.moneda_credito, v.inicial, v.num_cuotas,
+               COALESCE(cl.razon_social, '(Sin cliente)') AS cliente_nombre,
+               COALESCE(cl.rif, '') AS cliente_rif,
+               COALESCE((SELECT SUM(monto) FROM venta_cuotas
+                         WHERE venta_id = v.id), 0)          AS total_cuotas,
+               COALESCE((SELECT SUM(monto_credito) FROM venta_abonos
+                         WHERE venta_id = v.id), 0)          AS abonado
+        FROM ventas v
+        LEFT JOIN clientes cl ON cl.id = v.cliente_id
+        WHERE (v.condicion <> 'Contado' OR v.num_cuotas > 0)
+    """
+    params = []
+    if filtro:
+        q += (" AND (v.numero LIKE ? OR cl.razon_social LIKE ? "
+              "OR cl.rif LIKE ?)")
+        f = f"%{filtro}%"
+        params += [f, f, f]
+    q += " ORDER BY v.id DESC"
+    rows = []
+    for r in con.execute(q, params).fetchall():
+        d = dict(r)
+        d["saldo"] = round((d["total_cuotas"] or 0) - (d["abonado"] or 0), 2)
+        rows.append(d)
+    con.close()
+    if solo_pendientes:
+        rows = [r for r in rows if r["saldo"] > 0.009]
+    return rows
+
+
+def get_cxc_detalle(venta_id: int) -> dict:
+    """Detalle de una cuenta por cobrar: venta + cuotas con estado + abonos."""
+    import datetime
+    con = sqlite3.connect(DB_NAME)
+    con.row_factory = sqlite3.Row
+    v = con.execute("""
+        SELECT v.*, COALESCE(cl.razon_social,'') AS cliente_nombre,
+               COALESCE(cl.rif,'') AS cliente_rif
+        FROM ventas v LEFT JOIN clientes cl ON cl.id = v.cliente_id
+        WHERE v.id = ?
+    """, (venta_id,)).fetchone()
+    if not v:
+        con.close()
+        return {}
+    data = dict(v)
+    hoy = datetime.date.today().isoformat()
+    cuotas = []
+    for c in con.execute(
+            "SELECT * FROM venta_cuotas WHERE venta_id=? ORDER BY numero_cuota",
+            (venta_id,)).fetchall():
+        cd = dict(c)
+        ab = con.execute(
+            "SELECT COALESCE(SUM(monto_credito),0) FROM venta_abonos "
+            "WHERE cuota_id=?", (cd["id"],)).fetchone()[0] or 0
+        cd["abonado"] = round(ab, 2)
+        cd["saldo"] = round((cd["monto"] or 0) - ab, 2)
+        if cd["saldo"] <= 0.009:
+            cd["estado"] = "Pagada"
+        elif ab > 0.009:
+            cd["estado"] = "Parcial"
+        elif cd.get("fecha_venc") and cd["fecha_venc"] < hoy:
+            cd["estado"] = "Vencida"
+        else:
+            cd["estado"] = "Pendiente"
+        cuotas.append(cd)
+    data["cuotas"] = cuotas
+    data["abonos"] = [dict(r) for r in con.execute(
+        "SELECT * FROM venta_abonos WHERE venta_id=? ORDER BY id DESC",
+        (venta_id,)).fetchall()]
+    tot_cuotas = sum((c["monto"] or 0) for c in cuotas)
+    tot_abonado = sum((a["monto_credito"] or 0) for a in data["abonos"])
+    data["total_cuotas"] = round(tot_cuotas, 2)
+    data["abonado"] = round(tot_abonado, 2)
+    data["saldo"] = round(tot_cuotas - tot_abonado, 2)
+    con.close()
+    return data
+
+
+def registrar_abono(venta_id: int, cuota_id, monto: float, moneda: str,
+                    monto_credito: float, metodo_nombre: str = "",
+                    usuario: str = "", observaciones: str = "",
+                    fecha: str = "") -> int:
+    """Registra un abono a una venta a crédito. Devuelve el id o -1."""
+    import datetime
+    if not fecha:
+        fecha = datetime.date.today().isoformat()
+    try:
+        con = sqlite3.connect(DB_NAME)
+        cur = con.cursor()
+        cur.execute("""
+            INSERT INTO venta_abonos
+                (venta_id,cuota_id,fecha,monto,moneda,monto_credito,
+                 metodo_nombre,usuario,observaciones)
+            VALUES (?,?,?,?,?,?,?,?,?)
+        """, (venta_id, cuota_id, fecha, monto, moneda, monto_credito,
+              metodo_nombre, usuario, observaciones))
+        abono_id = cur.lastrowid
+        # Si la venta queda totalmente pagada, marcar estado 'Pagada'
+        tot = cur.execute("SELECT COALESCE(SUM(monto),0) FROM venta_cuotas "
+                          "WHERE venta_id=?", (venta_id,)).fetchone()[0] or 0
+        pag = cur.execute("SELECT COALESCE(SUM(monto_credito),0) FROM "
+                          "venta_abonos WHERE venta_id=?",
+                          (venta_id,)).fetchone()[0] or 0
+        if tot > 0 and pag >= tot - 0.009:
+            cur.execute("UPDATE ventas SET estado='Pagada' WHERE id=?",
+                        (venta_id,))
+        con.commit()
+        con.close()
+        return abono_id
+    except Exception:
+        return -1
+
+
+def eliminar_abono(abono_id: int) -> bool:
+    try:
+        con = sqlite3.connect(DB_NAME)
+        row = con.execute("SELECT venta_id FROM venta_abonos WHERE id=?",
+                          (abono_id,)).fetchone()
+        con.execute("DELETE FROM venta_abonos WHERE id=?", (abono_id,))
+        if row:
+            vid = row[0]
+            tot = con.execute("SELECT COALESCE(SUM(monto),0) FROM venta_cuotas "
+                              "WHERE venta_id=?", (vid,)).fetchone()[0] or 0
+            pag = con.execute("SELECT COALESCE(SUM(monto_credito),0) FROM "
+                              "venta_abonos WHERE venta_id=?",
+                              (vid,)).fetchone()[0] or 0
+            nuevo = "Pagada" if (tot > 0 and pag >= tot - 0.009) else "Emitida"
+            con.execute("UPDATE ventas SET estado=? WHERE id=?", (nuevo, vid))
+        con.commit()
+        con.close()
+        return True
+    except Exception:
+        return False
+
+
+# ── Contrato de compromiso de pago (plantilla editable) ─────────────────────
+_CONTRATO_PAGO_DEFAULT = """CONTRATO DE COMPROMISO DE PAGO
+
+Entre [EMPRESA_NOMBRE], RIF [EMPRESA_RIF], en lo sucesivo "EL VENDEDOR", y el ciudadano/empresa [CLIENTE_NOMBRE], RIF [CLIENTE_RIF], domiciliado en [CLIENTE_DIR], en lo sucesivo "EL COMPRADOR", se ha convenido el siguiente compromiso de pago:
+
+PRIMERA: EL COMPRADOR adquiere los bienes y/o servicios detallados en la factura N° [VENTA_NUMERO] de fecha [VENTA_FECHA], por un monto total de [VENTA_TOTAL].
+
+SEGUNDA: EL COMPRADOR se obliga a pagar bajo la modalidad de CRÉDITO, entregando una cuota inicial de [INICIAL] y el saldo restante en [NUM_CUOTAS] cuota(s) de [MONTO_CUOTA] cada una, con una frecuencia de [DIAS_FRECUENCIA] días, siendo la primera cuota exigible el [FECHA_PRIMERA_CUOTA].
+
+TERCERA: El plan de pagos detallado forma parte integrante del presente contrato:
+[PLAN_PAGOS]
+
+CUARTA: La falta de pago de dos (2) cuotas consecutivas dará derecho a EL VENDEDOR a exigir el pago total de la deuda pendiente.
+
+QUINTA: Ambas partes declaran aceptar el contenido del presente documento en todas sus partes.
+
+En [CIUDAD], a la fecha [VENTA_FECHA].
+
+
+_______________________            _______________________
+      EL VENDEDOR                          EL COMPRADOR
+"""
+
+
+def obtener_contrato_pago() -> str:
+    con = sqlite3.connect(DB_NAME)
+    row = con.execute(
+        "SELECT contenido FROM doc_contrato_pago WHERE id=1").fetchone()
+    con.close()
+    if row and row[0]:
+        return row[0]
+    return _CONTRATO_PAGO_DEFAULT
+
+
+def guardar_contrato_pago(contenido: str):
+    con = sqlite3.connect(DB_NAME)
+    con.execute("""
+        INSERT INTO doc_contrato_pago (id, contenido, fecha_mod)
+        VALUES (1, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(id) DO UPDATE SET contenido=excluded.contenido,
+                                      fecha_mod=CURRENT_TIMESTAMP
+    """, (contenido,))
+    con.commit()
+    con.close()
+
+
+# ── Datos de la empresa (facturas / cotizaciones) ──────────────────────────
+_EMPRESA_CAMPOS = ("nombre", "eslogan", "rif", "direccion",
+                   "telefono", "correo", "ciudad", "logo_path")
+
+_EMPRESA_DEFAULT = {
+    "nombre":    "CIGG SYSTEMS",
+    "eslogan":   "Tech & Cyber Security",
+    "rif":       "",
+    "direccion": "",
+    "telefono":  "",
+    "correo":    "",
+    "ciudad":    "Caracas",
+    "logo_path": "",
+}
+
+
+def obtener_empresa() -> dict:
+    """Devuelve los datos de la empresa como dict (con valores por defecto)."""
+    con = sqlite3.connect(DB_NAME)
+    con.row_factory = sqlite3.Row
+    row = con.execute(
+        "SELECT nombre,eslogan,rif,direccion,telefono,correo,ciudad,logo_path "
+        "FROM config_empresa WHERE id=1").fetchone()
+    con.close()
+    datos = dict(_EMPRESA_DEFAULT)
+    if row:
+        for k in _EMPRESA_CAMPOS:
+            v = row[k]
+            if v is not None and str(v) != "":
+                datos[k] = v
+    return datos
+
+
+def guardar_empresa(data: dict):
+    """Inserta/actualiza la fila única de datos de empresa."""
+    vals = [data.get(k, "") or "" for k in _EMPRESA_CAMPOS]
+    con = sqlite3.connect(DB_NAME)
+    con.execute("""
+        INSERT INTO config_empresa
+            (id,nombre,eslogan,rif,direccion,telefono,correo,ciudad,logo_path,fecha_mod)
+        VALUES (1,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
+        ON CONFLICT(id) DO UPDATE SET
+            nombre=excluded.nombre, eslogan=excluded.eslogan, rif=excluded.rif,
+            direccion=excluded.direccion, telefono=excluded.telefono,
+            correo=excluded.correo, ciudad=excluded.ciudad,
+            logo_path=excluded.logo_path, fecha_mod=CURRENT_TIMESTAMP
+    """, vals)
     con.commit()
     con.close()

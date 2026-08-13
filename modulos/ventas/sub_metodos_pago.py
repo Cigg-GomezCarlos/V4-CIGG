@@ -178,7 +178,8 @@ class SubmoduloMetodosPago(ctk.CTkFrame):
         win.geometry("460x520")
         win.configure(fg_color=col["fondo_oscuro"])
         win.transient(self.winfo_toplevel())
-        win.grab_set()
+        win.lift()
+        win.after(60, lambda: (win.lift(), win.focus_force(), win.grab_set()))
 
         ctk.CTkLabel(win,
                      text="✏️  Editar Método" if editar else "➕  Nuevo Método",
