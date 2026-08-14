@@ -1886,15 +1886,29 @@ def get_cxc_detalle(venta_id: int) -> dict:
         return {}
     data = dict(v)
     hoy = datetime.date.today().isoformat()
+    # Pool de abonos "generales" (distribuir automáticamente): cuota_id NULL.
+    # Se reparten entre las cuotas pendientes, de la más antigua a la más nueva.
+    pool = con.execute(
+        "SELECT COALESCE(SUM(monto_credito),0) FROM venta_abonos "
+        "WHERE venta_id=? AND (cuota_id IS NULL OR cuota_id=0)",
+        (venta_id,)).fetchone()[0] or 0
     cuotas = []
     for c in con.execute(
             "SELECT * FROM venta_cuotas WHERE venta_id=? ORDER BY numero_cuota",
             (venta_id,)).fetchall():
         cd = dict(c)
-        ab = con.execute(
+        # Abonos aplicados directamente a esta cuota.
+        directo = con.execute(
             "SELECT COALESCE(SUM(monto_credito),0) FROM venta_abonos "
             "WHERE cuota_id=?", (cd["id"],)).fetchone()[0] or 0
-        cd["abonado"] = round(ab, 2)
+        # Reparto del pool general hasta cubrir el saldo restante de la cuota.
+        restante = round((cd["monto"] or 0) - directo, 2)
+        aporte = 0.0
+        if restante > 0.009 and pool > 0.009:
+            aporte = min(restante, pool)
+            pool = round(pool - aporte, 2)
+        ab = round(directo + aporte, 2)
+        cd["abonado"] = ab
         cd["saldo"] = round((cd["monto"] or 0) - ab, 2)
         if cd["saldo"] <= 0.009:
             cd["estado"] = "Pagada"
