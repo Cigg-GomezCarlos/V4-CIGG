@@ -1,78 +1,17 @@
 """
 modulos/servicios/__init__.py
-================================
-Módulo Servicios — Fiscalizar, Entrada en Servicio, Lista de Equipos.
+=============================
+Módulo Servicios — orquestador de submódulos.
+
+Submódulos:
+    • Fiscalizar        → SubmoduloFiscalizar
+    • Entrada en Servicio → SubmoduloEntradaServicio (placeholder)
+    • Lista de Equipos  → SubmoduloListaEquipos (placeholder)
 """
 import customtkinter as ctk
-from core.permisos import puede
 
+from .sub_fiscalizar import SubmoduloFiscalizar
 
-# ─── Submódulos inline ────────────────────────────────────────────────────────
-
-class SubmoduloFiscalizar(ctk.CTkFrame):
-    def __init__(self, parent, estilos, permisos=None):
-        super().__init__(parent, corner_radius=0,
-                         fg_color=estilos["colores"]["fondo_oscuro"])
-        self.estilos = estilos
-        self._ui()
-
-    def _ui(self):
-        col = self.estilos["colores"]
-        ctk.CTkLabel(self, text="🔍  Fiscalizar",
-                     font=self.estilos["fuentes"]["titulo"],
-                     text_color=col["texto_oscuro"]).pack(pady=(30, 10))
-        t = ctk.CTkFrame(self, fg_color=col["tarjetas"], corner_radius=12)
-        t.pack(pady=10, padx=30, fill="both", expand=True)
-        ctk.CTkLabel(t, text="🔍", font=("Roboto Mono", 48),
-                     text_color=col["principal"]).pack(pady=(50, 10))
-        ctk.CTkLabel(t, text="Registro de fiscalizaciones de equipos.\nSubmódulo en desarrollo.",
-                     font=self.estilos["fuentes"]["normal"],
-                     text_color="#4A6FA5", justify="center").pack()
-
-
-class SubmoduloEntradaServicio(ctk.CTkFrame):
-    def __init__(self, parent, estilos, permisos=None):
-        super().__init__(parent, corner_radius=0,
-                         fg_color=estilos["colores"]["fondo_oscuro"])
-        self.estilos = estilos
-        self._ui()
-
-    def _ui(self):
-        col = self.estilos["colores"]
-        ctk.CTkLabel(self, text="🔧  Entrada en Servicio",
-                     font=self.estilos["fuentes"]["titulo"],
-                     text_color=col["texto_oscuro"]).pack(pady=(30, 10))
-        t = ctk.CTkFrame(self, fg_color=col["tarjetas"], corner_radius=12)
-        t.pack(pady=10, padx=30, fill="both", expand=True)
-        ctk.CTkLabel(t, text="🔧", font=("Roboto Mono", 48),
-                     text_color=col["principal"]).pack(pady=(50, 10))
-        ctk.CTkLabel(t, text="Ingreso de equipos al taller de servicio técnico.\nSubmódulo en desarrollo.",
-                     font=self.estilos["fuentes"]["normal"],
-                     text_color="#4A6FA5", justify="center").pack()
-
-
-class SubmoduloListaEquipos(ctk.CTkFrame):
-    def __init__(self, parent, estilos, permisos=None):
-        super().__init__(parent, corner_radius=0,
-                         fg_color=estilos["colores"]["fondo_oscuro"])
-        self.estilos = estilos
-        self._ui()
-
-    def _ui(self):
-        col = self.estilos["colores"]
-        ctk.CTkLabel(self, text="📋  Lista de Equipos en Servicio",
-                     font=self.estilos["fuentes"]["titulo"],
-                     text_color=col["texto_oscuro"]).pack(pady=(30, 10))
-        t = ctk.CTkFrame(self, fg_color=col["tarjetas"], corner_radius=12)
-        t.pack(pady=10, padx=30, fill="both", expand=True)
-        ctk.CTkLabel(t, text="📋", font=("Roboto Mono", 48),
-                     text_color=col["principal"]).pack(pady=(50, 10))
-        ctk.CTkLabel(t, text="Equipos actualmente en servicio técnico.\nSubmódulo en desarrollo.",
-                     font=self.estilos["fuentes"]["normal"],
-                     text_color="#4A6FA5", justify="center").pack()
-
-
-# ─── Módulo principal ─────────────────────────────────────────────────────────
 
 class ModuloServicios(ctk.CTkFrame):
     def __init__(self, parent, estilos, permisos=None):
@@ -81,9 +20,10 @@ class ModuloServicios(ctk.CTkFrame):
         self.estilos     = estilos
         self.permisos    = permisos or {}
         self._btn_activo = None
-        self.area = ctk.CTkFrame(self, corner_radius=0, fg_color="transparent")
         self._construir_barra_nav()
-        self.area.pack(side="bottom", fill="both", expand=True)
+        self.area = ctk.CTkFrame(self, corner_radius=0, fg_color="transparent")
+        self.area.pack(fill="both", expand=True)
+        self._activar_inicial()
 
     def _construir_barra_nav(self):
         col = self.estilos["colores"]
@@ -91,45 +31,71 @@ class ModuloServicios(ctk.CTkFrame):
         barra.pack(side="top", fill="x")
         barra.pack_propagate(False)
 
-        todas = [
-            ("Servicios.Fiscalizar",      "🔍 Fiscalizar",          SubmoduloFiscalizar),
-            ("Servicios.EntradaServicio", "🔧 Entrada en Servicio",  SubmoduloEntradaServicio),
-            ("Servicios.ListaEquipos",    "📋 Lista de Equipos",     SubmoduloListaEquipos),
+        self._submodulos = [
+            ("Servicios.Fiscalizar",       "🔍 Fiscalizar",        SubmoduloFiscalizar),
+            ("Servicios.EntradaServicio",  "🔧 Entrada en Servicio", self._placeholder("Entrada en Servicio")),
+            ("Servicios.ListaEquipos",     "📋 Lista de Equipos",   self._placeholder("Lista de Equipos")),
         ]
 
-        primer_btn = primer_clase = None
-        for clave, texto, clase in todas:
-            if not puede(self.permisos, clave, "ver"):
-                continue
+        self._nav_btns = []
+        for perm_key, label, clase in self._submodulos:
             btn = ctk.CTkButton(
-                barra, text=texto,
-                fg_color="transparent",
-                text_color=col["texto_oscuro"],
+                barra, text=label,
+                fg_color="transparent", text_color=col["texto_claro"],
                 hover_color=col["tarjetas"],
-                anchor="center", height=40, width=170,
+                width=180, height=40, corner_radius=0,
             )
-            btn.pack(side="left", padx=4, pady=5)
-            if primer_btn is None:
-                primer_btn, primer_clase = btn, clase
+            # Si es un callable (placeholder builder), ejecutarlo;
+            # si es una clase, instanciarla.
+            if callable(clase) and not isinstance(clase, type):
+                btn.configure(command=lambda b=btn, c=clase: self._activar_placeholder(b, c))
+            else:
+                btn.configure(command=lambda b=btn, c=clase: self._activar(b, c))
+            btn.pack(side="left", padx=2)
+            self._nav_btns.append((btn, clase))
 
-            def _cmd(c=clase, b=btn):
-                self._activar(b)
-                self._cargar(c)
-            btn.configure(command=_cmd)
+    def _placeholder(self, nombre):
+        """Devuelve una factory que crea un frame placeholder."""
+        def _factory(parent, estilos, permisos):
+            f = ctk.CTkFrame(parent, corner_radius=0,
+                             fg_color=estilos["colores"]["fondo_oscuro"])
+            ctk.CTkLabel(f, text=f"🔍 {nombre}",
+                         font=estilos["fuentes"]["titulo"],
+                         text_color=estilos["colores"]["principal"]
+                         ).pack(pady=(40, 10))
+            ctk.CTkLabel(f,
+                         text=f"Registro de {nombre.lower()}.\nSubmódulo en desarrollo.",
+                         font=estilos["fuentes"]["normal"],
+                         text_color=estilos["colores"].get("texto_oscuro", "#94A3B8")
+                         ).pack()
+            return f
+        return _factory
 
-        if primer_btn:
-            self._activar(primer_btn)
-            self._cargar(primer_clase)
+    def _activar_inicial(self):
+        if self._nav_btns:
+            btn, clase = self._nav_btns[0]
+            self._activar(btn, clase)
 
-    def _activar(self, btn):
+    def _activar(self, btn, clase):
         col = self.estilos["colores"]
         if self._btn_activo:
-            self._btn_activo.configure(fg_color="transparent",
-                                       text_color=col["texto_oscuro"])
-        btn.configure(fg_color=col["tarjetas"], text_color=col["texto_oscuro"])
+            self._btn_activo.configure(
+                fg_color="transparent", text_color=col["texto_claro"])
+        btn.configure(fg_color=col["tarjetas"],
+                      text_color=col["texto_oscuro"])
         self._btn_activo = btn
-
-    def _cargar(self, clase):
         for w in self.area.winfo_children():
             w.destroy()
         clase(self.area, self.estilos, self.permisos).pack(fill="both", expand=True)
+
+    def _activar_placeholder(self, btn, factory):
+        col = self.estilos["colores"]
+        if self._btn_activo:
+            self._btn_activo.configure(
+                fg_color="transparent", text_color=col["texto_claro"])
+        btn.configure(fg_color=col["tarjetas"],
+                      text_color=col["texto_oscuro"])
+        self._btn_activo = btn
+        for w in self.area.winfo_children():
+            w.destroy()
+        factory(self.area, self.estilos, self.permisos).pack(fill="both", expand=True)

@@ -2445,3 +2445,74 @@ def eliminar_abono_cxp(abono_id: int) -> bool:
         return True
     except Exception:
         return False
+
+# ═════════════════════════════════════════════════════════════════════════════
+# FISCALIZAR / ASIGNACIÓN DE CLIENTES A MÁQUINAS
+# ═════════════════════════════════════════════════════════════════════════════
+
+def listar_maquinas_sin_cliente(filtro: str = "") -> list:
+    """
+    Lista máquinas fiscales que NO tienen cliente asignado
+    (cliente NULL, vacío, o 'DISPONIBLE EN STOCK').
+
+    Permite filtrar por proveedor/fabricante, modelo, serial o registro.
+    Retorna dicts con: id, modelo_id, modelo_nombre, fabricante,
+    numero_registro, numero_serial, firmware, numero_precinto, fecha_registro.
+    """
+    con = sqlite3.connect(DB_NAME)
+    con.row_factory = sqlite3.Row
+    q = """
+        SELECT
+            mf.id,
+            mf.modelo_id,
+            mm.nombre        AS modelo_nombre,
+            mm.fabricante    AS fabricante,
+            mf.numero_registro,
+            mf.numero_serial,
+            mf.firmware,
+            mf.numero_precinto,
+            mf.fecha_registro
+        FROM maquinas_fiscales mf
+        JOIN modelos_maquinas mm ON mm.id = mf.modelo_id
+        WHERE mf.cliente IS NULL
+           OR TRIM(mf.cliente) = ''
+           OR mf.cliente = 'DISPONIBLE EN STOCK'
+    """
+    params = []
+    if filtro:
+        f = f"%{filtro}%"
+        q += (" AND (mm.nombre LIKE ? OR mm.fabricante LIKE ? "
+              "OR mf.numero_registro LIKE ? OR mf.numero_serial LIKE ?)")
+        params = [f, f, f, f]
+    q += " ORDER BY mf.fecha_registro DESC, mf.id DESC"
+    rows = [dict(r) for r in con.execute(q, params).fetchall()]
+    con.close()
+    return rows
+
+
+def asignar_cliente_maquina(maquina_id: int, cliente_nombre: str,
+                            numero_precinto: str = "") -> bool:
+    """
+    Asigna un cliente a una máquina fiscal (fiscalización).
+    Opcionalmente actualiza el número de precinto.
+    """
+    try:
+        con = sqlite3.connect(DB_NAME)
+        cur = con.cursor()
+        if numero_precinto:
+            cur.execute("""
+                UPDATE maquinas_fiscales
+                SET cliente = ?, numero_precinto = ?
+                WHERE id = ?
+            """, (cliente_nombre, numero_precinto, maquina_id))
+        else:
+            cur.execute("""
+                UPDATE maquinas_fiscales
+                SET cliente = ?
+                WHERE id = ?
+            """, (cliente_nombre, maquina_id))
+        con.commit()
+        con.close()
+        return True
+    except Exception:
+        return False
