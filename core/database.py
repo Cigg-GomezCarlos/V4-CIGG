@@ -315,7 +315,7 @@ def _init_roles(cur: sqlite3.Cursor):
         "Archivos.Usuarios", "Archivos.Máquinas", "Archivos.Proveedores",
         "Archivos.Clientes", "Archivos.Sistemas", "Archivos.Roles",
         "Ventas", "Inventario", "Monedas",
-        "Servicios", "Documentos", "Informes",
+        "Servicios", "Documentos", "Informes", "Compras",
     ]
     for clave in claves_admin:
         cur.execute(
@@ -614,6 +614,7 @@ def inicializar_todo():
     _init_cotizaciones(cur)
     _init_metodos_pago(cur)
     _init_ventas(cur)
+    _init_compras(cur)
     con.commit()
     con.close()
 
@@ -2084,3 +2085,363 @@ def guardar_empresa(data: dict):
     """, vals)
     con.commit()
     con.close()
+# ═════════════════════════════════════════════════════════════════════════════
+# COMPRAS  (pegar esto al final de core/database.py)
+# ═════════════════════════════════════════════════════════════════════════════
+
+def _init_compras(cur):
+    """Tablas de compras, ítems, pagos y abonos (CxP)."""
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS compras (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            numero          TEXT    UNIQUE NOT NULL,
+            fecha           TEXT    NOT NULL,
+            proveedor_id    INTEGER,
+            observaciones   TEXT    DEFAULT '',
+            estado          TEXT    DEFAULT 'Recibida',
+            usuario         TEXT    DEFAULT '',
+            total           REAL    DEFAULT 0,
+            moneda          TEXT    DEFAULT 'USD',
+            condicion       TEXT    DEFAULT 'Contado',
+            inicial         REAL    DEFAULT 0,
+            num_cuotas      INTEGER DEFAULT 0,
+            monto_cuota     REAL    DEFAULT 0,
+            moneda_credito  TEXT    DEFAULT ''
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS compra_items (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            compra_id       INTEGER NOT NULL REFERENCES compras(id) ON DELETE CASCADE,
+            tipo            TEXT    NOT NULL,
+            item_ref_id     INTEGER,
+            descripcion     TEXT    NOT NULL,
+            cantidad        REAL    NOT NULL DEFAULT 1,
+            precio_unitario REAL    NOT NULL DEFAULT 0,
+            subtotal        REAL    NOT NULL DEFAULT 0,
+            moneda_item     TEXT    DEFAULT 'USD'
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS compra_pagos (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            compra_id      INTEGER NOT NULL REFERENCES compras(id) ON DELETE CASCADE,
+            metodo_pago_id INTEGER,
+            metodo_nombre  TEXT    DEFAULT '',
+            moneda         TEXT    DEFAULT 'USD',
+            monto          REAL    NOT NULL DEFAULT 0
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS compra_abonos (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            compra_id     INTEGER NOT NULL REFERENCES compras(id) ON DELETE CASCADE,
+            fecha         TEXT    DEFAULT '',
+            monto         REAL    DEFAULT 0,
+            moneda        TEXT    DEFAULT 'USD',
+            monto_credito REAL    DEFAULT 0,
+            metodo_nombre TEXT    DEFAULT '',
+            usuario       TEXT    DEFAULT '',
+            observaciones TEXT    DEFAULT ''
+        )
+    """)
+
+
+# ── helpers compras ──
+
+def get_next_compra_numero() -> str:
+    import datetime
+    con = sqlite3.connect(DB_NAME)
+    year = datetime.date.today().year
+    row = con.execute(
+        "SELECT COUNT(*) FROM compras WHERE numero LIKE ?",
+        (f"COM-{year}-%",)
+    ).fetchone()
+    con.close()
+    n = (row[0] if row else 0) + 1
+    return f"COM-{year}-{n:04d}"
+
+
+def listar_compras(filtro: str = "") -> list:
+    con = sqlite3.connect(DB_NAME)
+    con.row_factory = sqlite3.Row
+    q = """
+        SELECT c.id, c.numero, c.fecha, c.estado, c.total, c.moneda,
+               c.condicion, c.usuario,
+               COALESCE(p.razon_social, '(Sin proveedor)') AS proveedor_nombre,
+               COALESCE(p.rif, '') AS proveedor_rif
+        FROM compras c
+        LEFT JOIN proveedores p ON p.id = c.proveedor_id
+    """
+    params = ()
+    if filtro:
+        q += (" WHERE c.numero LIKE ? OR p.razon_social LIKE ? "
+              "OR p.rif LIKE ? OR c.condicion LIKE ?")
+        f = f"%{filtro}%"
+        params = (f, f, f, f)
+    q += " ORDER BY c.id DESC"
+    rows = [dict(r) for r in con.execute(q, params).fetchall()]
+    con.close()
+    return rows
+
+
+def get_compra_completa(compra_id: int) -> dict:
+    con = sqlite3.connect(DB_NAME)
+    con.row_factory = sqlite3.Row
+    row = con.execute("""
+        SELECT c.*, COALESCE(p.razon_social,'') AS proveedor_nombre,
+               COALESCE(p.rif,'') AS proveedor_rif,
+               COALESCE(p.direccion,'') AS proveedor_dir,
+               COALESCE(p.telefono,'') AS proveedor_tel,
+               COALESCE(p.correo,'') AS proveedor_correo
+        FROM compras c
+        LEFT JOIN proveedores p ON p.id = c.proveedor_id
+        WHERE c.id = ?
+    """, (compra_id,)).fetchone()
+    if not row:
+        con.close()
+        return {}
+    data = dict(row)
+    data["items"] = [dict(r) for r in con.execute(
+        "SELECT * FROM compra_items WHERE compra_id=? ORDER BY id", (compra_id,)
+    ).fetchall()]
+    data["pagos"] = [dict(r) for r in con.execute(
+        "SELECT * FROM compra_pagos WHERE compra_id=? ORDER BY id", (compra_id,)
+    ).fetchall()]
+    con.close()
+    return data
+
+
+def _compra_write_hijos(cur, compra_id, items, pagos):
+    for it in items:
+        sub = round(it["cantidad"] * it["precio_unitario"], 4)
+        cur.execute("""
+            INSERT INTO compra_items
+                (compra_id,tipo,item_ref_id,descripcion,cantidad,
+                 precio_unitario,subtotal,moneda_item)
+            VALUES (?,?,?,?,?,?,?,?)
+        """, (compra_id, it["tipo"], it.get("item_ref_id"),
+              it["descripcion"], it["cantidad"], it["precio_unitario"],
+              sub, it.get("moneda_item", "USD")))
+        if it.get("tipo") == "Inventario" and it.get("item_ref_id"):
+            cur.execute(
+                "UPDATE items_inventario SET stock=stock+?, precio_costo=? WHERE id=?",
+                (it["cantidad"], it["precio_unitario"], it["item_ref_id"])
+            )
+    for p in pagos:
+        cur.execute("""
+            INSERT INTO compra_pagos
+                (compra_id,metodo_pago_id,metodo_nombre,moneda,monto)
+            VALUES (?,?,?,?,?)
+        """, (compra_id, p.get("metodo_pago_id"), p.get("metodo_nombre", ""),
+              p.get("moneda", "USD"), p.get("monto", 0)))
+
+
+def add_compra(data: dict, items: list, pagos: list) -> int:
+    try:
+        con = sqlite3.connect(DB_NAME)
+        cur = con.cursor()
+        cur.execute("""
+            INSERT INTO compras
+                (numero,fecha,proveedor_id,observaciones,estado,usuario,total,
+                 moneda,condicion,inicial,num_cuotas,monto_cuota,moneda_credito)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """, (data["numero"], data["fecha"], data.get("proveedor_id"),
+              data.get("observaciones", ""), data.get("estado", "Recibida"),
+              data.get("usuario", ""), data.get("total", 0),
+              data.get("moneda", "USD"), data.get("condicion", "Contado"),
+              data.get("inicial", 0), data.get("num_cuotas", 0),
+              data.get("monto_cuota", 0),
+              data.get("moneda_credito", data.get("moneda", "USD"))))
+        compra_id = cur.lastrowid
+        _compra_write_hijos(cur, compra_id, items, pagos)
+        con.commit()
+        con.close()
+        return compra_id
+    except Exception:
+        return -1
+
+
+def update_compra(compra_id: int, data: dict, items: list, pagos: list) -> bool:
+    try:
+        con = sqlite3.connect(DB_NAME)
+        cur = con.cursor()
+        old_items = cur.execute(
+            "SELECT tipo, item_ref_id, cantidad FROM compra_items WHERE compra_id=?",
+            (compra_id,)).fetchall()
+        for tipo, ref_id, cant in old_items:
+            if tipo == "Inventario" and ref_id:
+                cur.execute(
+                    "UPDATE items_inventario SET stock=MAX(0,stock-?) WHERE id=?",
+                    (cant, ref_id))
+        cur.execute("""
+            UPDATE compras SET
+                numero=?,fecha=?,proveedor_id=?,observaciones=?,estado=?,
+                total=?,moneda=?,condicion=?,inicial=?,num_cuotas=?,
+                monto_cuota=?,moneda_credito=?
+            WHERE id=?
+        """, (data["numero"], data["fecha"], data.get("proveedor_id"),
+              data.get("observaciones", ""), data.get("estado", "Recibida"),
+              data.get("total", 0), data.get("moneda", "USD"),
+              data.get("condicion", "Contado"), data.get("inicial", 0),
+              data.get("num_cuotas", 0), data.get("monto_cuota", 0),
+              data.get("moneda_credito", data.get("moneda", "USD")), compra_id))
+        cur.execute("DELETE FROM compra_items WHERE compra_id=?", (compra_id,))
+        cur.execute("DELETE FROM compra_pagos WHERE compra_id=?", (compra_id,))
+        _compra_write_hijos(cur, compra_id, items, pagos)
+        con.commit()
+        con.close()
+        return True
+    except Exception:
+        return False
+
+
+def eliminar_compra(compra_id: int) -> bool:
+    try:
+        con = sqlite3.connect(DB_NAME)
+        cur = con.cursor()
+        old_items = cur.execute(
+            "SELECT tipo, item_ref_id, cantidad FROM compra_items WHERE compra_id=?",
+            (compra_id,)).fetchall()
+        for tipo, ref_id, cant in old_items:
+            if tipo == "Inventario" and ref_id:
+                cur.execute(
+                    "UPDATE items_inventario SET stock=MAX(0,stock-?) WHERE id=?",
+                    (cant, ref_id))
+        cur.execute("DELETE FROM compra_items WHERE compra_id=?", (compra_id,))
+        cur.execute("DELETE FROM compra_pagos WHERE compra_id=?", (compra_id,))
+        cur.execute("DELETE FROM compra_abonos WHERE compra_id=?", (compra_id,))
+        cur.execute("DELETE FROM compras WHERE id=?", (compra_id,))
+        con.commit()
+        con.close()
+        return True
+    except Exception:
+        return False
+
+
+# ── CxP ──
+
+def listar_cxp(filtro: str = "", solo_pendientes: bool = False) -> list:
+    con = sqlite3.connect(DB_NAME)
+    con.row_factory = sqlite3.Row
+    q = """
+        SELECT c.id, c.numero, c.fecha, c.estado, c.condicion,
+               c.moneda_credito, c.inicial, c.total,
+               COALESCE(p.razon_social, '(Sin proveedor)') AS proveedor_nombre,
+               COALESCE(p.rif, '') AS proveedor_rif,
+               COALESCE((SELECT SUM(monto) FROM compra_pagos
+                         WHERE compra_id = c.id), 0)        AS total_pagos,
+               COALESCE((SELECT SUM(monto_credito) FROM compra_abonos
+                         WHERE compra_id = c.id), 0)        AS total_abonos
+        FROM compras c
+        LEFT JOIN proveedores p ON p.id = c.proveedor_id
+        WHERE c.condicion = 'Crédito'
+    """
+    params = []
+    if filtro:
+        q += (" AND (c.numero LIKE ? OR p.razon_social LIKE ? "
+              "OR p.rif LIKE ?)")
+        f = f"%{filtro}%"
+        params += [f, f, f]
+    q += " ORDER BY c.id DESC"
+    rows = []
+    for r in con.execute(q, params).fetchall():
+        d = dict(r)
+        d["abonado"] = round((d["total_pagos"] or 0) + (d["total_abonos"] or 0), 2)
+        d["saldo"] = round(d["total"] - d["abonado"], 2)
+        rows.append(d)
+    con.close()
+    if solo_pendientes:
+        rows = [r for r in rows if r["saldo"] > 0.009]
+    return rows
+
+
+def get_cxp_detalle(compra_id: int) -> dict:
+    con = sqlite3.connect(DB_NAME)
+    con.row_factory = sqlite3.Row
+    c = con.execute("""
+        SELECT c.*, COALESCE(p.razon_social,'') AS proveedor_nombre,
+               COALESCE(p.rif,'') AS proveedor_rif
+        FROM compras c
+        LEFT JOIN proveedores p ON p.id = c.proveedor_id
+        WHERE c.id = ?
+    """, (compra_id,)).fetchone()
+    if not c:
+        con.close()
+        return {}
+    data = dict(c)
+    data["pagos"] = [dict(r) for r in con.execute(
+        "SELECT * FROM compra_pagos WHERE compra_id=? ORDER BY id", (compra_id,)
+    ).fetchall()]
+    data["abonos"] = [dict(r) for r in con.execute(
+        "SELECT * FROM compra_abonos WHERE compra_id=? ORDER BY id DESC",
+        (compra_id,)).fetchall()]
+    tot_pagos = sum((a["monto"] or 0) for a in data["pagos"])
+    tot_abonos = sum((a["monto_credito"] or 0) for a in data["abonos"])
+    data["total_pagos"] = round(tot_pagos, 2)
+    data["total_abonos"] = round(tot_abonos, 2)
+    data["abonado"] = round(tot_pagos + tot_abonos, 2)
+    data["saldo"] = round(data["total"] - data["abonado"], 2)
+    con.close()
+    return data
+
+
+def registrar_abono_cxp(compra_id: int, monto: float, moneda: str,
+                        monto_credito: float, metodo_nombre: str = "",
+                        usuario: str = "", observaciones: str = "",
+                        fecha: str = "") -> int:
+    import datetime
+    if not fecha:
+        fecha = datetime.date.today().isoformat()
+    try:
+        con = sqlite3.connect(DB_NAME)
+        cur = con.cursor()
+        cur.execute("""
+            INSERT INTO compra_abonos
+                (compra_id,fecha,monto,moneda,monto_credito,
+                 metodo_nombre,usuario,observaciones)
+            VALUES (?,?,?,?,?,?,?,?)
+        """, (compra_id, fecha, monto, moneda, monto_credito,
+              metodo_nombre, usuario, observaciones))
+        abono_id = cur.lastrowid
+        pag = cur.execute(
+            "SELECT COALESCE(SUM(monto),0) FROM compra_pagos WHERE compra_id=?",
+            (compra_id,)).fetchone()[0] or 0
+        ab = cur.execute(
+            "SELECT COALESCE(SUM(monto_credito),0) FROM compra_abonos WHERE compra_id=?",
+            (compra_id,)).fetchone()[0] or 0
+        tot = cur.execute("SELECT total FROM compras WHERE id=?",
+                          (compra_id,)).fetchone()[0] or 0
+        if (pag + ab) >= tot - 0.009:
+            cur.execute("UPDATE compras SET estado='Pagada' WHERE id=?",
+                        (compra_id,))
+        con.commit()
+        con.close()
+        return abono_id
+    except Exception:
+        return -1
+
+
+def eliminar_abono_cxp(abono_id: int) -> bool:
+    try:
+        con = sqlite3.connect(DB_NAME)
+        row = con.execute("SELECT compra_id FROM compra_abonos WHERE id=?",
+                          (abono_id,)).fetchone()
+        con.execute("DELETE FROM compra_abonos WHERE id=?", (abono_id,))
+        if row:
+            cid = row[0]
+            pag = con.execute(
+                "SELECT COALESCE(SUM(monto),0) FROM compra_pagos WHERE compra_id=?",
+                (cid,)).fetchone()[0] or 0
+            ab = con.execute(
+                "SELECT COALESCE(SUM(monto_credito),0) FROM compra_abonos WHERE compra_id=?",
+                (cid,)).fetchone()[0] or 0
+            tot = con.execute("SELECT total FROM compras WHERE id=?",
+                              (cid,)).fetchone()[0] or 0
+            nuevo = "Pagada" if (pag + ab) >= tot - 0.009 else "Recibida"
+            con.execute("UPDATE compras SET estado=? WHERE id=?", (nuevo, cid))
+        con.commit()
+        con.close()
+        return True
+    except Exception:
+        return False

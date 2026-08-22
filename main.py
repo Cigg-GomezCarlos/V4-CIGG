@@ -41,12 +41,12 @@ from modulos.monedas     import ModuloMonedas, inicializar_tablas, actualizar_en
 from modulos.servicios   import ModuloServicios
 from modulos.documentos  import ModuloDocumentos
 from modulos.informes    import ModuloInformes
+from modulos.compras     import ModuloCompras
 
 # ── Inicialización de la BD (única llamada al arranque) ───────────────────────
 inicializar_todo()
 inicializar_tablas()
 actualizar_en_background()          # actualiza tasas sin bloquear la UI
-
 # ── Modo oscuro global ────────────────────────────────────────────────────────
 ctk.set_appearance_mode("Dark")
 
@@ -338,6 +338,7 @@ class AppAdministrativa(ctk.CTk):
         nav_todos = [
             ("📁  Archivos",   "Archivos",   lambda: self._cargar(ModuloArchivos)),
             ("📊  Ventas",     "Ventas",      lambda: self._cargar(ModuloVentas)),
+            ("🛍   Compras",    "Compras",     lambda: self._cargar(ModuloCompras)),
             ("📦  Inventario", "Inventario",  lambda: self._cargar(ModuloInventario)),
             ("💱  Monedas",    "Monedas",     lambda: self._cargar_monedas()),
             ("🔧  Servicios",  "Servicios",   lambda: self._cargar(ModuloServicios)),
