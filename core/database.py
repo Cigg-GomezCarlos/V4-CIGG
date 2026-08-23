@@ -615,6 +615,7 @@ def inicializar_todo():
     _init_metodos_pago(cur)
     _init_ventas(cur)
     _init_compras(cur)
+    _init_servicios(cur)
     con.commit()
     con.close()
 
@@ -2516,3 +2517,329 @@ def asignar_cliente_maquina(maquina_id: int, cliente_nombre: str,
         return True
     except Exception:
         return False
+
+# ═════════════════════════════════════════════════════════════════════════════
+# SERVICIOS — Entrada en Servicio, Procesos, Salida, Inspecciones
+# ═════════════════════════════════════════════════════════════════════════════
+
+def _init_servicios(cur):
+    """Tablas de servicios: entradas, procesos, salidas, inspecciones."""
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS servicios_entrada (
+            id                INTEGER PRIMARY KEY AUTOINCREMENT,
+            maquina_id        INTEGER NOT NULL REFERENCES maquinas_fiscales(id),
+            fecha_entrada     TEXT    DEFAULT (datetime('now','localtime')),
+            precinto_validado TEXT    DEFAULT '',
+            caja              INTEGER DEFAULT 0,
+            libro             INTEGER DEFAULT 0,
+            cable_alimentacion INTEGER DEFAULT 0,
+            cable_comunicacion INTEGER DEFAULT 0,
+            ultimo_reporte_z  TEXT    DEFAULT '',
+            motivo_servicio   TEXT    DEFAULT '',
+            estado            TEXT    DEFAULT 'En Servicio',
+            usuario_entrada   TEXT    DEFAULT ''
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS servicios_procesos (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            entrada_id    INTEGER NOT NULL REFERENCES servicios_entrada(id) ON DELETE CASCADE,
+            tipo_proceso  TEXT    NOT NULL,
+            descripcion   TEXT    DEFAULT '',
+            fecha         TEXT    DEFAULT (datetime('now','localtime')),
+            usuario       TEXT    DEFAULT ''
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS servicios_salida (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            entrada_id     INTEGER NOT NULL UNIQUE REFERENCES servicios_entrada(id) ON DELETE CASCADE,
+            fecha_salida   TEXT    DEFAULT (datetime('now','localtime')),
+            precinto_salida TEXT   DEFAULT '',
+            ultimo_z       TEXT    DEFAULT '',
+            usuario_salida TEXT    DEFAULT ''
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS servicios_inspecciones (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            maquina_id    INTEGER NOT NULL REFERENCES maquinas_fiscales(id),
+            fecha_inspeccion TEXT DEFAULT (datetime('now','localtime')),
+            tipo          TEXT    DEFAULT 'Anual',
+            usuario       TEXT    DEFAULT ''
+        )
+    """)
+
+
+# ── Entrada en Servicio ────────────────────────────────────────────────────
+
+def buscar_maquina_por_registro_serial(texto: str) -> list:
+    """Busca máquinas por registro o serial (para entrada en servicio)."""
+    con = sqlite3.connect(DB_NAME)
+    con.row_factory = sqlite3.Row
+    f = f"%{texto}%"
+    rows = con.execute("""
+        SELECT mf.id, mf.numero_registro, mf.numero_serial,
+               mf.cliente, mf.numero_precinto, mf.firmware,
+               mm.nombre AS modelo_nombre, mm.fabricante,
+               mf.fecha_registro
+        FROM maquinas_fiscales mf
+        JOIN modelos_maquinas mm ON mm.id = mf.modelo_id
+        WHERE mf.numero_registro LIKE ? OR mf.numero_serial LIKE ?
+        ORDER BY mf.id DESC
+        LIMIT 20
+    """, (f, f)).fetchall()
+    con.close()
+    return [dict(r) for r in rows]
+
+
+def get_maquina_con_historial(maquina_id: int) -> dict:
+    """Devuelve máquina + última inspección + última entrada en servicio."""
+    con = sqlite3.connect(DB_NAME)
+    con.row_factory = sqlite3.Row
+    m = con.execute("""
+        SELECT mf.*, mm.nombre AS modelo_nombre, mm.fabricante
+        FROM maquinas_fiscales mf
+        JOIN modelos_maquinas mm ON mm.id = mf.modelo_id
+        WHERE mf.id = ?
+    """, (maquina_id,)).fetchone()
+    if not m:
+        con.close()
+        return {}
+    data = dict(m)
+    # Última inspección
+    insp = con.execute("""
+        SELECT fecha_inspeccion FROM servicios_inspecciones
+        WHERE maquina_id = ? ORDER BY fecha_inspeccion DESC LIMIT 1
+    """, (maquina_id,)).fetchone()
+    data["ultima_inspeccion"] = insp["fecha_inspeccion"] if insp else None
+    # Última entrada en servicio
+    ent = con.execute("""
+        SELECT fecha_entrada FROM servicios_entrada
+        WHERE maquina_id = ? ORDER BY fecha_entrada DESC LIMIT 1
+    """, (maquina_id,)).fetchone()
+    data["ultima_entrada"] = ent["fecha_entrada"] if ent else None
+    con.close()
+    return data
+
+
+def calcular_dias_inspeccion(maquina: dict) -> dict:
+    """
+    Calcula días para la próxima inspección anual.
+
+    - THE FACTORY HKA, C.A.: desde última inspección, si no tiene desde fiscalización
+    - Otros fabricantes: desde la fecha de fiscalización (cliente asignado)
+
+    Retorna: {"dias_restantes": int, "vencida": bool, "fecha_vencimiento": str,
+              "mensaje": str}
+    """
+    import datetime
+    fabricante = (maquina.get("fabricante") or "").upper()
+    hoy = datetime.date.today()
+
+    # Determinar fecha base
+    if "THE FACTORY" in fabricante or "HKA" in fabricante:
+        fecha_base_str = maquina.get("ultima_inspeccion")
+        if not fecha_base_str:
+            fecha_base_str = maquina.get("fecha_registro")
+    else:
+        fecha_base_str = maquina.get("fecha_registro")
+
+    if not fecha_base_str:
+        return {"dias_restantes": -9999, "vencida": True,
+                "fecha_vencimiento": "Desconocida",
+                "mensaje": "⚠️ Sin fecha de referencia para inspección"}
+
+    try:
+        # intentar ISO
+        fecha_base = datetime.datetime.strptime(fecha_base_str, "%Y-%m-%d").date()
+    except ValueError:
+        try:
+            fecha_base = datetime.datetime.strptime(fecha_base_str, "%d/%m/%Y").date()
+        except ValueError:
+            return {"dias_restantes": -9999, "vencida": True,
+                    "fecha_vencimiento": "Desconocida",
+                    "mensaje": "⚠️ Fecha de referencia inválida"}
+
+    fecha_venc = fecha_base + datetime.timedelta(days=365)
+    dias_restantes = (fecha_venc - hoy).days
+    vencida = dias_restantes < 0
+
+    if vencida:
+        mensaje = f"🔴 Inspección vencida hace {abs(dias_restantes)} días"
+    elif dias_restantes <= 30:
+        mensaje = f"🟡 Inspección vence en {dias_restantes} días"
+    else:
+        mensaje = f"🟢 Inspección vigente — vence en {dias_restantes} días"
+
+    return {
+        "dias_restantes": dias_restantes,
+        "vencida": vencida,
+        "fecha_vencimiento": fecha_venc.strftime("%d/%m/%Y"),
+        "mensaje": mensaje,
+    }
+
+
+def registrar_entrada_servicio(data: dict) -> int:
+    """Registra una nueva entrada en servicio. Retorna el id o -1."""
+    try:
+        con = sqlite3.connect(DB_NAME)
+        cur = con.cursor()
+        cur.execute("""
+            INSERT INTO servicios_entrada
+                (maquina_id, precinto_validado, caja, libro,
+                 cable_alimentacion, cable_comunicacion, ultimo_reporte_z,
+                 motivo_servicio, estado, usuario_entrada)
+            VALUES (?,?,?,?,?,?,?,?,?,?)
+        """, (data["maquina_id"], data.get("precinto_validado", ""),
+              int(data.get("caja", 0)), int(data.get("libro", 0)),
+              int(data.get("cable_alimentacion", 0)),
+              int(data.get("cable_comunicacion", 0)),
+              data.get("ultimo_reporte_z", ""),
+              data.get("motivo_servicio", ""), "En Servicio",
+              data.get("usuario", "")))
+        eid = cur.lastrowid
+        con.commit()
+        con.close()
+        return eid
+    except Exception:
+        return -1
+
+
+def listar_entradas_servicio(estado: str = "En Servicio", filtro: str = "") -> list:
+    """Lista entradas en servicio con datos de la máquina."""
+    con = sqlite3.connect(DB_NAME)
+    con.row_factory = sqlite3.Row
+    q = """
+        SELECT se.*,
+               mf.numero_registro, mf.numero_serial, mf.cliente,
+               mm.nombre AS modelo_nombre, mm.fabricante
+        FROM servicios_entrada se
+        JOIN maquinas_fiscales mf ON mf.id = se.maquina_id
+        JOIN modelos_maquinas mm ON mm.id = mf.modelo_id
+        WHERE se.estado = ?
+    """
+    params = [estado]
+    if filtro:
+        f = f"%{filtro}%"
+        q += (" AND (mf.numero_registro LIKE ? OR mf.numero_serial LIKE ? "
+              "OR mf.cliente LIKE ? OR mm.nombre LIKE ?)")
+        params += [f, f, f, f]
+    q += " ORDER BY se.fecha_entrada DESC"
+    rows = [dict(r) for r in con.execute(q, params).fetchall()]
+    con.close()
+    return rows
+
+
+def get_entrada_completa(entrada_id: int) -> dict:
+    """Entrada + máquina + procesos + salida (si existe)."""
+    con = sqlite3.connect(DB_NAME)
+    con.row_factory = sqlite3.Row
+    e = con.execute("""
+        SELECT se.*,
+               mf.numero_registro, mf.numero_serial, mf.cliente,
+               mf.numero_precinto, mf.firmware,
+               mm.nombre AS modelo_nombre, mm.fabricante
+        FROM servicios_entrada se
+        JOIN maquinas_fiscales mf ON mf.id = se.maquina_id
+        JOIN modelos_maquinas mm ON mm.id = mf.modelo_id
+        WHERE se.id = ?
+    """, (entrada_id,)).fetchone()
+    if not e:
+        con.close()
+        return {}
+    data = dict(e)
+    data["procesos"] = [dict(r) for r in con.execute(
+        "SELECT * FROM servicios_procesos WHERE entrada_id=? ORDER BY fecha",
+        (entrada_id,)).fetchall()]
+    sal = con.execute(
+        "SELECT * FROM servicios_salida WHERE entrada_id=?",
+        (entrada_id,)).fetchone()
+    data["salida"] = dict(sal) if sal else None
+    con.close()
+    return data
+
+
+def registrar_proceso(entrada_id: int, tipo_proceso: str, descripcion: str,
+                      usuario: str = "") -> int:
+    try:
+        con = sqlite3.connect(DB_NAME)
+        cur = con.cursor()
+        cur.execute("""
+            INSERT INTO servicios_procesos
+                (entrada_id, tipo_proceso, descripcion, usuario)
+            VALUES (?,?,?,?)
+        """, (entrada_id, tipo_proceso, descripcion, usuario))
+        pid = cur.lastrowid
+        # Si es inspección anual, registrar también en inspecciones
+        if tipo_proceso == "Inspección Anual":
+            mid = con.execute(
+                "SELECT maquina_id FROM servicios_entrada WHERE id=?",
+                (entrada_id,)).fetchone()[0]
+            cur.execute("""
+                INSERT INTO servicios_inspecciones
+                    (maquina_id, fecha_inspeccion, tipo, usuario)
+                VALUES (?, datetime('now','localtime'), 'Anual', ?)
+            """, (mid, usuario))
+        con.commit()
+        con.close()
+        return pid
+    except Exception:
+        return -1
+
+
+def registrar_salida(entrada_id: int, precinto_salida: str, ultimo_z: str,
+                     usuario: str = "") -> bool:
+    try:
+        con = sqlite3.connect(DB_NAME)
+        cur = con.cursor()
+        cur.execute("""
+            INSERT INTO servicios_salida
+                (entrada_id, precinto_salida, ultimo_z, usuario_salida)
+            VALUES (?,?,?,?)
+        """, (entrada_id, precinto_salida, ultimo_z, usuario))
+        cur.execute("""
+            UPDATE servicios_entrada SET estado='Completado'
+            WHERE id=?
+        """, (entrada_id,))
+        con.commit()
+        con.close()
+        return True
+    except Exception:
+        return False
+
+
+def listar_todas_maquinas_con_vencimiento() -> list:
+    """Para Lista de Equipos: todas las máquinas con días para inspección."""
+    import datetime
+    con = sqlite3.connect(DB_NAME)
+    con.row_factory = sqlite3.Row
+    maqs = con.execute("""
+        SELECT mf.id, mf.numero_registro, mf.numero_serial, mf.cliente,
+               mf.firmware, mf.fecha_registro,
+               mm.nombre AS modelo_nombre, mm.fabricante
+        FROM maquinas_fiscales mf
+        JOIN modelos_maquinas mm ON mm.id = mf.modelo_id
+        ORDER BY mf.id DESC
+    """).fetchall()
+    result = []
+    for m in dict(maqs):
+        mid = m["id"]
+        # última inspección
+        insp = con.execute("""
+            SELECT fecha_inspeccion FROM servicios_inspecciones
+            WHERE maquina_id = ? ORDER BY fecha_inspeccion DESC LIMIT 1
+        """, (mid,)).fetchone()
+        m["ultima_inspeccion"] = insp["fecha_inspeccion"] if insp else None
+        info = calcular_dias_inspeccion(m)
+        m["dias_restantes"] = info["dias_restantes"]
+        m["vencida"] = info["vencida"]
+        m["fecha_vencimiento"] = info["fecha_vencimiento"]
+        result.append(m)
+    con.close()
+    # Ordenar: vencidos primero, luego por días restantes (menor a mayor)
+    result.sort(key=lambda x: (
+        0 if x["vencida"] else 1,
+        x["dias_restantes"] if not x["vencida"] else -x["dias_restantes"]
+    ))
+    return result
