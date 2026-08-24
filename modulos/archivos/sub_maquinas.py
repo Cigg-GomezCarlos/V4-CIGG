@@ -509,6 +509,13 @@ class SubmoduloMaquinas(ctk.CTkFrame):
 
         entry_reg, entry_serial, entry_firmware = entries
 
+        # Fecha de vencimiento de inspección (opcional)
+        ctk.CTkLabel(form, text="Vencimiento Inspección (opcional):", font=font,
+                     text_color=col["texto_oscuro"]).pack(anchor="w", padx=20)
+        entry_venc_inspeccion = ctk.CTkEntry(form, placeholder_text="Ej: 2027-08-24", width=270,
+                             font=font, border_color=col["principal"])
+        entry_venc_inspeccion.pack(pady=(4, 12), padx=20)
+
         # ── Cliente con autocomplete ──────────────────────────────────────────
         ctk.CTkLabel(form, text="Cliente:", font=font,
                      text_color=col["texto_oscuro"]).pack(anchor="w", padx=20)
@@ -621,7 +628,7 @@ class SubmoduloMaquinas(ctk.CTkFrame):
                 con = sqlite3.connect(DB_NAME)
                 cur = con.cursor()
                 cur.execute("""
-                    SELECT id, numero_registro, numero_serial, firmware, cliente
+                    SELECT id, numero_registro, numero_serial, firmware, cliente, fecha_vencimiento_inspeccion
                     FROM maquinas_fiscales
                     WHERE modelo_id=?
                     ORDER BY id DESC
@@ -644,8 +651,8 @@ class SubmoduloMaquinas(ctk.CTkFrame):
                              font=font, text_color="#4A6FA5").pack(pady=20)
                 return
 
-            headers = ["Registro", "Serial", "Firmware", "Cliente"]
-            widths  = [110, 130, 90, 170]
+            headers = ["Registro", "Serial", "Firmware", "Cliente", "Venc. Insp."]
+            widths  = [100, 120, 70, 130, 90]
             hdr_row = ctk.CTkFrame(scroll, fg_color="#0A192F")
             hdr_row.pack(fill="x", pady=(0, 4))
             for h, w in zip(headers, widths):
@@ -654,7 +661,8 @@ class SubmoduloMaquinas(ctk.CTkFrame):
                              text_color=col["principal"], width=w, anchor="w").pack(side="left", padx=4)
             ctk.CTkLabel(hdr_row, text="", width=72).pack(side="left")
 
-            for i, (uid, reg, serial, firm, cliente) in enumerate(rows):
+            for i, row in enumerate(rows):
+                uid, reg, serial, firm, cliente, fecha_venc = row[0], row[1], row[2], row[3], row[4], (row[5] if len(row) > 5 else "")
                 bg = col["tarjetas"] if i % 2 == 0 else "#0A192F"
                 fila = ctk.CTkFrame(scroll, fg_color=bg, corner_radius=4)
                 fila.pack(fill="x", pady=2)
@@ -675,11 +683,11 @@ class SubmoduloMaquinas(ctk.CTkFrame):
                         btn_frame, text="✏️", width=34, height=28, font=font,
                         fg_color="#1A3550", hover_color=col["principal_hover"],
                         text_color=col["principal"],
-                        command=lambda u=uid, r=reg, s=serial, fw=firm, cl=cliente:
-                                _abrir_modal_editar(u, r, s, fw, cl),
+                        command=lambda u=uid, r=reg, s=serial, fw=firm, cl=cliente, fv=fecha_venc:
+                                _abrir_modal_editar(u, r, s, fw, cl, fv),
                     ).pack(side="right", padx=(2, 0))
 
-                for val, w in zip([reg, serial, firm, cliente or "—"], widths):
+                for val, w in zip([reg, serial, firm, cliente or "—", fecha_venc or "—"], widths):
                     ctk.CTkLabel(fila, text=str(val), font=font,
                                  text_color=col["texto_oscuro"],
                                  width=w, anchor="w").pack(side="left", padx=4, pady=2)
@@ -700,7 +708,7 @@ class SubmoduloMaquinas(ctk.CTkFrame):
             cargar_lista()
 
         # ─────────────────────────────────────────────────────────────────────
-        def _abrir_modal_editar(uid, reg, serial, firm, cliente):
+        def _abrir_modal_editar(uid, reg, serial, firm, cliente, fecha_venc=""):
             col2 = self.estilos["colores"]
 
             modal = ctk.CTkToplevel(self)
@@ -731,6 +739,14 @@ class SubmoduloMaquinas(ctk.CTkFrame):
                 entries_edit.append(e)
 
             e_reg2, e_serial2, e_firm2 = entries_edit
+
+            # Fecha de vencimiento de inspección (opcional)
+            ctk.CTkLabel(modal, text="Vencimiento Inspección (opcional):", font=font,
+                         text_color=col2["texto_oscuro"]).pack(anchor="w", padx=40)
+            e_venc = ctk.CTkEntry(modal, width=380, font=font,
+                                  border_color=col2["principal"])
+            e_venc.insert(0, fecha_venc or "")
+            e_venc.pack(pady=(4, 10), padx=40)
 
             # ── Cliente autocomplete en modal ─────────────────────────────────
             ctk.CTkLabel(modal, text="Cliente:", font=font,
@@ -814,9 +830,9 @@ class SubmoduloMaquinas(ctk.CTkFrame):
                     cur = con.cursor()
                     cur.execute("""
                         UPDATE maquinas_fiscales
-                        SET numero_registro=?, numero_serial=?, firmware=?, cliente=?
+                        SET numero_registro=?, numero_serial=?, firmware=?, cliente=?, fecha_vencimiento_inspeccion=?
                         WHERE id=?
-                    """, (nuevo_reg, nuevo_serial, nuevo_firm, nuevo_cli, uid))
+                    """, (nuevo_reg, nuevo_serial, nuevo_firm, nuevo_cli, e_venc.get().strip(), uid))
                     con.commit()
                     con.close()
                     modal.destroy()
@@ -839,6 +855,7 @@ class SubmoduloMaquinas(ctk.CTkFrame):
             serial = entry_serial.get().strip()
             firm   = entry_firmware.get().strip()
             cli    = entry_cliente.get().strip()
+            venc   = entry_venc_inspeccion.get().strip()
 
             if not reg or not serial:
                 lbl_st.configure(text="Registro y Serial son obligatorios.", text_color=col["error"])
@@ -852,15 +869,16 @@ class SubmoduloMaquinas(ctk.CTkFrame):
                 cur = con.cursor()
                 cur.execute("""
                     INSERT INTO maquinas_fiscales
-                        (modelo_id, numero_registro, numero_serial, firmware, cliente)
-                    VALUES (?,?,?,?,?)
-                """, (mid, reg, serial, firm, cli))
+                        (modelo_id, numero_registro, numero_serial, firmware, cliente, fecha_vencimiento_inspeccion)
+                    VALUES (?,?,?,?,?,?)
+                """, (mid, reg, serial, firm, cli, venc))
                 con.commit()
                 con.close()
                 lbl_st.configure(text="✅ Unidad registrada. Abriendo documentos…", text_color=col["principal"])
                 for e in entries:
                     e.delete(0, "end")
                 entry_cliente.delete(0, "end")
+                entry_venc_inspeccion.delete(0, "end")
                 cargar_lista()
                 self.after(300, lambda: imprimir_docs_al_registrar(
                     mid, nombre_mod, reg, serial, firm, cli))

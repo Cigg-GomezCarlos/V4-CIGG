@@ -259,16 +259,17 @@ class SubmoduloEntradaServicio(ctk.CTkFrame):
             for r in resultados:
                 f = ctk.CTkFrame(result_frame, fg_color="transparent")
                 f.pack(fill="x", padx=8, pady=2)
+                f.grid_columnconfigure(0, weight=1)
                 lbl_txt = (f'{r["numero_registro"]}  |  {r["numero_serial"]}  |  '
                            f'{r["modelo_nombre"]}  |  {r["fabricante"]}  |  '
                            f'Cliente: {r["cliente"] or "Sin asignar"}')
                 ctk.CTkLabel(f, text=lbl_txt,
                              text_color=col["texto_claro"],
-                             font=fnt["normal"]).pack(side="left")
+                             font=fnt["normal"]).grid(row=0, column=0, sticky="w", padx=(0,8))
                 ctk.CTkButton(f, text="Seleccionar", width=90, height=24,
                               fg_color=col["principal"], text_color="#0A192F",
                               command=lambda m=r: _seleccionar(m)
-                              ).pack(side="right")
+                              ).grid(row=0, column=1, sticky="e")
 
         # ── Info de máquina seleccionada ──
         info_frame = ctk.CTkFrame(body, fg_color=col["tarjetas"], corner_radius=8)

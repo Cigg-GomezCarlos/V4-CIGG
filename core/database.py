@@ -156,9 +156,15 @@ def _init_maquinas(cur: sqlite3.Cursor):
             cliente          TEXT DEFAULT 'DISPONIBLE EN STOCK',
             inspeccion_anual INTEGER DEFAULT 0,
             fecha_registro   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            fecha_vencimiento_inspeccion TEXT DEFAULT '',
             FOREIGN KEY (modelo_id) REFERENCES modelos_maquinas(id) ON DELETE CASCADE
         )
     """)
+    # Migracion: agregar columna fecha_vencimiento_inspeccion si no existe
+    cur.execute("PRAGMA table_info(maquinas_fiscales)")
+    cols_mf = {row[1] for row in cur.fetchall()}
+    if "fecha_vencimiento_inspeccion" not in cols_mf:
+        cur.execute("ALTER TABLE maquinas_fiscales ADD COLUMN fecha_vencimiento_inspeccion TEXT DEFAULT ''")
 
 
 def _init_clientes(cur: sqlite3.Cursor):
@@ -2607,6 +2613,8 @@ def get_maquina_con_historial(maquina_id: int) -> dict:
         con.close()
         return {}
     data = dict(m)
+    if data.get("fecha_registro"):
+        data["fecha_registro"] = str(data["fecha_registro"])[:10]
     # Última inspección
     insp = con.execute("""
         SELECT fecha_inspeccion FROM servicios_inspecciones
@@ -2627,6 +2635,7 @@ def calcular_dias_inspeccion(maquina: dict) -> dict:
     """
     Calcula días para la próxima inspección anual.
 
+    - Si existe fecha_vencimiento_inspeccion registrada manualmente, usa esa.
     - THE FACTORY HKA, C.A.: desde última inspección, si no tiene desde fiscalización
     - Otros fabricantes: desde la fecha de fiscalización (cliente asignado)
 
@@ -2636,6 +2645,28 @@ def calcular_dias_inspeccion(maquina: dict) -> dict:
     import datetime
     fabricante = (maquina.get("fabricante") or "").upper()
     hoy = datetime.date.today()
+
+    # 1) Si hay fecha de vencimiento manual registrada, usarla directamente
+    fecha_venc_manual = maquina.get("fecha_vencimiento_inspeccion")
+    if fecha_venc_manual and str(fecha_venc_manual).strip():
+        try:
+            fecha_venc = datetime.datetime.strptime(str(fecha_venc_manual)[:10], "%Y-%m-%d").date()
+            dias_restantes = (fecha_venc - hoy).days
+            vencida = dias_restantes < 0
+            if vencida:
+                mensaje = f"🔴 Inspección vencida hace {abs(dias_restantes)} días"
+            elif dias_restantes <= 30:
+                mensaje = f"🟡 Inspección vence en {dias_restantes} días"
+            else:
+                mensaje = f"🟢 Inspección vigente — vence en {dias_restantes} días"
+            return {
+                "dias_restantes": dias_restantes,
+                "vencida": vencida,
+                "fecha_vencimiento": fecha_venc.strftime("%d/%m/%Y"),
+                "mensaje": mensaje,
+            }
+        except ValueError:
+            pass  # Si falla el parseo, continuar con la lógica normal
 
     # Determinar fecha base
     if "THE FACTORY" in fabricante or "HKA" in fabricante:
@@ -2657,9 +2688,12 @@ def calcular_dias_inspeccion(maquina: dict) -> dict:
         try:
             fecha_base = datetime.datetime.strptime(fecha_base_str, "%d/%m/%Y").date()
         except ValueError:
-            return {"dias_restantes": -9999, "vencida": True,
-                    "fecha_vencimiento": "Desconocida",
-                    "mensaje": "⚠️ Fecha de referencia inválida"}
+            try:
+                fecha_base = datetime.datetime.strptime(fecha_base_str, "%Y-%m-%d %H:%M:%S").date()
+            except ValueError:
+                return {"dias_restantes": -9999, "vencida": True,
+                        "fecha_vencimiento": "Desconocida",
+                        "mensaje": "⚠️ Fecha de referencia inválida"}
 
     fecha_venc = fecha_base + datetime.timedelta(days=365)
     dias_restantes = (fecha_venc - hoy).days
@@ -2816,15 +2850,18 @@ def listar_todas_maquinas_con_vencimiento() -> list:
     con.row_factory = sqlite3.Row
     maqs = con.execute("""
         SELECT mf.id, mf.numero_registro, mf.numero_serial, mf.cliente,
-               mf.firmware, mf.fecha_registro,
+               mf.firmware, mf.fecha_registro, mf.fecha_vencimiento_inspeccion,
                mm.nombre AS modelo_nombre, mm.fabricante
         FROM maquinas_fiscales mf
         JOIN modelos_maquinas mm ON mm.id = mf.modelo_id
         ORDER BY mf.id DESC
     """).fetchall()
     result = []
-    for m in dict(maqs):
+    maquinas = [dict(r) for r in maqs]
+    for m in maquinas:
         mid = m["id"]
+        if m.get("fecha_registro"):
+            m["fecha_registro"] = str(m["fecha_registro"])[:10]
         # última inspección
         insp = con.execute("""
             SELECT fecha_inspeccion FROM servicios_inspecciones

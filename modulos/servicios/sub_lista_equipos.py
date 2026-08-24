@@ -190,7 +190,13 @@ class SubmoduloListaEquipos(ctk.CTkFrame):
 
     def _ver_historial(self, maquina_id):
         from core.database import (get_maquina_con_historial,
-                                   calcular_dias_inspeccion)
+                                   calcular_dias_inspeccion,
+                                   DB_NAME)
+        import sqlite3
+        import datetime
+        import tempfile
+        import webbrowser
+        import os
         col, fnt = self.col, self.fnt
 
         m = get_maquina_con_historial(maquina_id)
@@ -201,8 +207,8 @@ class SubmoduloListaEquipos(ctk.CTkFrame):
         info_insp = calcular_dias_inspeccion(m)
 
         modal = ctk.CTkToplevel(self)
-        modal.title(f"Historial — {m['numero_registro']}")
-        modal.geometry("640x560")
+        modal.title(f"Historial - {m['numero_registro']}")
+        modal.geometry("900x750")
         modal.configure(fg_color=col["fondo_oscuro"])
         modal.transient(self.winfo_toplevel())
         modal.lift()
@@ -211,7 +217,7 @@ class SubmoduloListaEquipos(ctk.CTkFrame):
 
         body = ctk.CTkScrollableFrame(modal, corner_radius=0,
                                       fg_color=col["fondo_oscuro"])
-        body.pack(fill="both", expand=True, padx=16, pady=12)
+        body.pack(side="top", fill="both", expand=True, padx=16, pady=12)
 
         # Info general
         info = ctk.CTkFrame(body, fg_color=col["tarjetas"], corner_radius=8)
@@ -232,31 +238,45 @@ class SubmoduloListaEquipos(ctk.CTkFrame):
                      text_color=col["principal"], font=fnt["normal"]
                      ).pack(anchor="w", padx=12, pady=(2, 8))
 
+        # Consulta BD
+        try:
+            con = sqlite3.connect(DB_NAME)
+            con.row_factory = sqlite3.Row
+            insps = con.execute(
+                "SELECT * FROM servicios_inspecciones WHERE maquina_id=? ORDER BY fecha_inspeccion DESC",
+                (maquina_id,)).fetchall()
+            entradas = con.execute("""
+                SELECT se.*, ss.fecha_salida, ss.precinto_salida, ss.ultimo_z
+                FROM servicios_entrada se
+                LEFT JOIN servicios_salida ss ON ss.entrada_id = se.id
+                WHERE se.maquina_id = ? ORDER BY se.fecha_entrada DESC
+            """, (maquina_id,)).fetchall()
+            procesos = con.execute("""
+                SELECT sp.*, se.fecha_entrada
+                FROM servicios_procesos sp
+                JOIN servicios_entrada se ON se.id = sp.entrada_id
+                WHERE se.maquina_id = ?
+                ORDER BY sp.fecha DESC
+            """, (maquina_id,)).fetchall()
+            con.close()
+        except Exception as e:
+            ctk.CTkLabel(body, text=f"Error BD: {e}",
+                         text_color="#E63946", font=fnt["normal"]
+                         ).pack(anchor="w", pady=8)
+            return
+
         # Inspecciones
         ctk.CTkLabel(body, text="Inspecciones registradas",
                      text_color=col["principal"],
                      font=fnt["subtitulo"]).pack(anchor="w", pady=(8, 4))
-
-        con = __import__("sqlite3").connect(__import__("core.database").DB_NAME)
-        con.row_factory = __import__("sqlite3").Row
-        insps = con.execute(
-            "SELECT * FROM servicios_inspecciones WHERE maquina_id=? ORDER BY fecha_inspeccion DESC",
-            (maquina_id,)).fetchall()
-        entradas = con.execute("""
-            SELECT se.*, ss.fecha_salida, ss.precinto_salida, ss.ultimo_z
-            FROM servicios_entrada se
-            LEFT JOIN servicios_salida ss ON ss.entrada_id = se.id
-            WHERE se.maquina_id = ? ORDER BY se.fecha_entrada DESC
-        """, (maquina_id,)).fetchall()
-        con.close()
 
         if insps:
             for ins in insps:
                 f = ctk.CTkFrame(body, fg_color=col["tarjetas"], corner_radius=4)
                 f.pack(fill="x", pady=2)
                 ctk.CTkLabel(f,
-                             text=f'📅 {ins["fecha_inspeccion"]} — '
-                                  f'{ins["tipo"]} — {ins["usuario"] or ""}',
+                             text=f'📅 {ins["fecha_inspeccion"]} - '
+                                  f'{ins["tipo"]} - {ins["usuario"] or ""}',
                              text_color=col["texto_claro"],
                              font=fnt["normal"]).pack(side="left", padx=8)
         else:
@@ -273,21 +293,117 @@ class SubmoduloListaEquipos(ctk.CTkFrame):
             for ent in entradas:
                 f = ctk.CTkFrame(body, fg_color=col["tarjetas"], corner_radius=4)
                 f.pack(fill="x", pady=2)
-                estado = "✅ Completado" if ent["fecha_salida"] else "🔧 En Servicio"
+                estado = "Completado" if ent["fecha_salida"] else "En Servicio"
                 txt = (f'{estado}  |  {ent["fecha_entrada"]}  |  '
-                       f'Motivo: {ent["motivo_servicio"] or "—"}  |  '
+                       f'Motivo: {ent["motivo_servicio"] or "-"}  |  '
                        f'Usuario: {ent["usuario_entrada"] or ""}')
                 ctk.CTkLabel(f, text=txt,
                              text_color=col["texto_claro"],
-                             font=fnt["normal"]).pack(side="left", padx=8)
+                             font=fnt["normal"]).pack(anchor="w", padx=8)
                 if ent["fecha_salida"]:
                     ctk.CTkLabel(f,
-                                 text=f'Salida: {ent["fecha_salida"]}  |  '
-                                      f'Precinto: {ent["precinto_salida"] or "—"}  |  '
-                                      f'Z: {ent["ultimo_z"] or "—"}',
+                                 text=f'   Salida: {ent["fecha_salida"]}  |  '
+                                      f'Precinto: {ent["precinto_salida"] or "-"}  |  '
+                                      f'Z: {ent["ultimo_z"] or "-"}',
                                  text_color=col.get("texto_oscuro", "#94A3B8"),
                                  font=("Segoe UI", 9)).pack(anchor="w", padx=20)
         else:
             ctk.CTkLabel(body, text="Sin entradas en servicio.",
                          text_color=col.get("texto_oscuro", "#94A3B8"),
                          font=fnt["normal"]).pack(anchor="w")
+
+        # Procesos realizados
+        ctk.CTkLabel(body, text="Procesos realizados",
+                     text_color=col["principal"],
+                     font=fnt["subtitulo"]).pack(anchor="w", pady=(12, 4))
+
+        if procesos:
+            for pr in procesos:
+                f = ctk.CTkFrame(body, fg_color=col["tarjetas"], corner_radius=4)
+                f.pack(fill="x", pady=2)
+                ctk.CTkLabel(f,
+                             text=f'⚙️ {pr["tipo_proceso"]} - {pr["fecha"]} - '
+                                  f'{pr["usuario"] or ""}',
+                             text_color=col["texto_claro"],
+                             font=fnt["normal"]).pack(anchor="w", padx=8)
+                if pr.get("descripcion"):
+                    desc_lbl = ctk.CTkLabel(f, text=f'📝 {pr["descripcion"]}',
+                                 text_color=col.get("texto_oscuro", "#94A3B8"),
+                                 font=("Segoe UI", 9),
+                                 wraplength=800, justify="left")
+                    desc_lbl.pack(anchor="w", padx=20)
+        else:
+            ctk.CTkLabel(body, text="Sin procesos registrados.",
+                         text_color=col.get("texto_oscuro", "#94A3B8"),
+                         font=fnt["normal"]).pack(anchor="w")
+
+        # Footer con boton Imprimir
+        footer = ctk.CTkFrame(modal, height=64, corner_radius=0, fg_color="#020C1B")
+        footer.pack(side="bottom", fill="x")
+        footer.pack_propagate(False)
+
+        def _imprimir_historial():
+            now = datetime.datetime.now().strftime("%d/%m/%Y %H:%M")
+            html = f"""<!DOCTYPE html>
+<html><head><meta charset="UTF-8">
+<style>
+  body {{ font-family: Arial, sans-serif; margin: 40px; color: #333; }}
+  h1 {{ color: #0A192F; border-bottom: 3px solid #00E5FF; padding-bottom: 10px; }}
+  h2 {{ color: #0A192F; margin-top: 24px; }}
+  .section {{ margin: 16px 0; padding: 12px; background: #f8f9fa; border-radius: 6px; }}
+  .label {{ font-weight: bold; color: #0A192F; }}
+  .item {{ padding: 8px; margin: 4px 0; background: white; border-radius: 4px; border-left: 4px solid #00E5FF; }}
+  .desc {{ color: #666; font-size: 13px; margin-left: 20px; }}
+  .footer {{ margin-top: 40px; text-align: center; color: #999; font-size: 12px; }}
+</style></head><body>
+<h1>HISTORIAL DEL EQUIPO</h1>
+<div class="section">
+  <p><span class="label">Fecha de emision:</span> {now}</p>
+  <p><span class="label">Registro:</span> {m.get("numero_registro","-")}</p>
+  <p><span class="label">Serial:</span> {m.get("numero_serial","-")}</p>
+  <p><span class="label">Modelo:</span> {m.get("modelo_nombre","-")}</p>
+  <p><span class="label">Fabricante:</span> {m.get("fabricante","-")}</p>
+  <p><span class="label">Cliente:</span> {m.get("cliente") or "Sin asignar"}</p>
+  <p><span class="label">Inspeccion:</span> {info_insp["mensaje"]}</p>
+  <p><span class="label">Vencimiento:</span> {info_insp["fecha_vencimiento"]}</p>
+</div>
+<h2>Entradas en Servicio</h2>
+"""
+            if entradas:
+                for ent in entradas:
+                    estado = "Completado" if ent["fecha_salida"] else "En Servicio"
+                    html += f'<div class="item"><span class="label">{estado}</span> - {ent["fecha_entrada"]} - Motivo: {ent["motivo_servicio"] or "-"} - Usuario: {ent["usuario_entrada"] or ""}</div>'
+                    if ent["fecha_salida"]:
+                        html += f'<div class="desc">Salida: {ent["fecha_salida"]} | Precinto: {ent["precinto_salida"] or "-"} | Z: {ent["ultimo_z"] or "-"}</div>'
+            else:
+                html += '<p>Sin entradas en servicio.</p>'
+
+            html += '<h2>Procesos Realizados</h2>'
+            if procesos:
+                for pr in procesos:
+                    html += f'<div class="item"><span class="label">{pr["tipo_proceso"]}</span> - {pr["fecha"]} - {pr["usuario"] or ""}</div>'
+                    if pr.get("descripcion"):
+                        html += f'<div class="desc">{pr["descripcion"]}</div>'
+            else:
+                html += '<p>Sin procesos registrados.</p>'
+
+            html += '<h2>Inspecciones</h2>'
+            if insps:
+                for ins in insps:
+                    html += f'<div class="item">{ins["fecha_inspeccion"]} - {ins["tipo"]} - {ins["usuario"] or ""}</div>'
+            else:
+                html += '<p>Sin inspecciones registradas.</p>'
+
+            html += '<div class="footer">Generado por CIGG SYSTEMS - Historial de Equipo</div></body></html>'
+
+            tmp = tempfile.NamedTemporaryFile("w", suffix=".html",
+                                               delete=False, encoding="utf-8")
+            tmp.write(html)
+            tmp.close()
+            webbrowser.open(f"file://{tmp.name}")
+
+        ctk.CTkButton(footer, text="Imprimir Historial",
+                      fg_color=col["principal"], text_color="#0A192F",
+                      hover_color=col.get("principal_hover", "#00C8D4"),
+                      width=200, height=40,
+                      command=_imprimir_historial).pack(side="right", padx=20, pady=12)
