@@ -280,7 +280,7 @@ class SubmoduloCxC(ctk.CTkFrame):
 
         win = ctk.CTkToplevel(self)
         win.title(f"Cuenta por Cobrar — {det.get('numero','')}")
-        win.geometry("760x680")
+        win.geometry("1000x680")
         win.configure(fg_color=col["fondo_oscuro"])
         win.transient(self.winfo_toplevel())
         win.lift()
@@ -294,11 +294,12 @@ class SubmoduloCxC(ctk.CTkFrame):
                           f"{det.get('cliente_nombre','') or '(Sin cliente)'}",
                      font=fnt["subtitulo"], text_color=col["principal"]
                      ).pack(anchor="w", padx=16, pady=(12, 2))
-        ctk.CTkLabel(head,
-                     text=f"Financiado: {_fmt(det['total_cuotas'], mc)}    "
-                          f"Abonado: {_fmt(det['abonado'], mc)}    "
-                          f"Saldo: {_fmt(det['saldo'], mc)}    "
-                          f"Moneda crédito: {mc}",
+        header_text = f"Financiado: {_fmt(det['total_cuotas'], mc)}    "                       f"Abonado: {_fmt(det['abonado'], mc)}    "                       f"Saldo: {_fmt(det['saldo'], mc)}    "                       f"Moneda crédito: {mc}"
+        if det.get("total_abonos_bs", 0) > 0:
+            header_text += f"    Total pagado: Bs. {det['total_abonos_bs']:,.2f}"
+        if det.get("tasa_promedio", 0) > 0:
+            header_text += f"    Tasa promedio: {det['tasa_promedio']:,.2f}"
+        ctk.CTkLabel(head, text=header_text,
                      font=fnt["normal"], text_color=col["texto_claro"]
                      ).pack(anchor="w", padx=16, pady=(0, 12))
 
@@ -351,11 +352,13 @@ class SubmoduloCxC(ctk.CTkFrame):
                 orig = (f'{_fmt(a["monto"], a["moneda"])} '
                         f'→ {_fmt(a["monto_credito"], mc)}'
                         if a["moneda"] != mc else _fmt(a["monto"], mc))
+                tasa_txt = f' (Tasa: {a.get("tasa_bs", 0):,.2f})' if a.get("tasa_bs", 0) > 0 else ''
+                bs_txt = f'  ·  Bs. {a.get("monto_bs", 0):,.2f}{tasa_txt}' if a.get("monto_bs", 0) > 0 else '' 
                 fa = ctk.CTkFrame(body, corner_radius=6, fg_color=col["tarjetas"])
                 fa.pack(fill="x", pady=2)
                 ctk.CTkLabel(
                     fa,
-                    text=f'{a.get("fecha","")}  ·  {cuota_txt}  ·  {orig}  ·  '
+                    text=f'{a.get("fecha","")}  ·  {cuota_txt}  ·  {orig}{bs_txt}  ·  '
                          f'{a.get("metodo_nombre","") or "—"}  ·  '
                          f'{a.get("usuario","") or ""}',
                     font=fnt["normal"], text_color=col["texto_claro"],
@@ -487,8 +490,19 @@ class SubmoduloCxC(ctk.CTkFrame):
             metodo = "" if met_var.get() == met_opts[0] else met_var.get()
             usuario = getattr(self, "usuario_actual", "") or \
                 self.permisos.get("_usuario", "") if isinstance(self.permisos, dict) else ""
+            # Calcular equivalente en Bs. (con manejo de errores)
+            try:
+                tasas = _cargar_tasas()
+                # Usar la tasa de la moneda del abono (USD, EUR, USDT, etc.)
+                tasa_moneda = (tasas.get(moneda, {}) or {}).get("tasa", 0) or 0
+                monto_bs = round(monto * tasa_moneda, 2) if tasa_moneda > 0 else 0
+                tasa_bs = tasa_moneda
+            except Exception as e:
+                print(f"[DEBUG] Error calculando BS: {e}")
+                monto_bs = 0
+                tasa_bs = 0
             r = registrar_abono(det["id"], cuota_id, monto, moneda, mcred,
-                                metodo, usuario, "")
+                                metodo, usuario, "", "", monto_bs, tasa_bs)
             if r == -1:
                 messagebox.showerror("Error", "No se pudo registrar el abono.",
                                      parent=win)

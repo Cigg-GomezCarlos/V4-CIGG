@@ -624,11 +624,20 @@ class SubmoduloVenta(ctk.CTkFrame):
                 return
             if monto <= 0:
                 return
+            try:
+                from modulos.monedas.db import leer_todas
+                _tasas_tmp = leer_todas()
+            except Exception:
+                _tasas_tmp = {}
+            tasa_bs_tmp = (_tasas_tmp.get("VES", {}) or {}).get("tasa", 0) or 0
+            monto_bs_tmp = round(monto * tasa_bs_tmp, 2) if tasa_bs_tmp > 0 and m["moneda"] == "USD" else 0
             _pagos.append({
                 "metodo_pago_id": m["id"],
                 "metodo_nombre":  m["nombre"],
                 "moneda":         m["moneda"],
                 "monto":          monto,
+                "monto_bs":       monto_bs_tmp,
+                "tasa_bs":        tasa_bs_tmp,
             })
             _render_pagos()
 

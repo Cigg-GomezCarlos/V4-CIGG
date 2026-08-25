@@ -540,6 +540,12 @@ def _init_ventas(cur: sqlite3.Cursor):
             moneda_item     TEXT    DEFAULT 'USD'
         )
     """)
+    # Migracion: agregar columnas monto_bs y tasa_bs a venta_abonos si no existen
+    cur.execute("PRAGMA table_info(venta_abonos)")
+    cols_ab = {r[1] for r in cur.fetchall()}
+    for col_name, ddl in [("monto_bs", "REAL DEFAULT 0"), ("tasa_bs", "REAL DEFAULT 0")]:
+        if col_name not in cols_ab:
+            cur.execute(f"ALTER TABLE venta_abonos ADD COLUMN {col_name} {ddl}")
     cur.execute("""
         CREATE TABLE IF NOT EXISTS venta_pagos (
             id             INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -547,9 +553,17 @@ def _init_ventas(cur: sqlite3.Cursor):
             metodo_pago_id INTEGER,
             metodo_nombre  TEXT    DEFAULT '',
             moneda         TEXT    DEFAULT 'USD',
-            monto          REAL    NOT NULL DEFAULT 0
+            monto          REAL    NOT NULL DEFAULT 0,
+            monto_bs       REAL    DEFAULT 0,
+            tasa_bs        REAL    DEFAULT 0
         )
     """)
+    # Migracion: agregar columnas monto_bs y tasa_bs a venta_pagos si no existen
+    cur.execute("PRAGMA table_info(venta_pagos)")
+    cols_vp = {r[1] for r in cur.fetchall()}
+    for col_name, ddl in [("monto_bs", "REAL DEFAULT 0"), ("tasa_bs", "REAL DEFAULT 0")]:
+        if col_name not in cols_vp:
+            cur.execute(f"ALTER TABLE venta_pagos ADD COLUMN {col_name} {ddl}")
     cur.execute("""
         CREATE TABLE IF NOT EXISTS venta_cuotas (
             id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -568,6 +582,8 @@ def _init_ventas(cur: sqlite3.Cursor):
             monto         REAL    DEFAULT 0,
             moneda        TEXT    DEFAULT 'USD',
             monto_credito REAL    DEFAULT 0,
+            monto_bs      REAL    DEFAULT 0,
+            tasa_bs       REAL    DEFAULT 0,
             metodo_nombre TEXT    DEFAULT '',
             usuario       TEXT    DEFAULT '',
             observaciones TEXT    DEFAULT ''
@@ -1750,10 +1766,11 @@ def _venta_write_hijos(cur, venta_id, items, pagos, cuotas):
     for p in pagos:
         cur.execute("""
             INSERT INTO venta_pagos
-                (venta_id,metodo_pago_id,metodo_nombre,moneda,monto)
-            VALUES (?,?,?,?,?)
+                (venta_id,metodo_pago_id,metodo_nombre,moneda,monto,monto_bs,tasa_bs)
+            VALUES (?,?,?,?,?,?,?)
         """, (venta_id, p.get("metodo_pago_id"), p.get("metodo_nombre", ""),
-              p.get("moneda", "USD"), p.get("monto", 0)))
+              p.get("moneda", "USD"), p.get("monto", 0),
+              p.get("monto_bs", 0), p.get("tasa_bs", 0)))
     for c in cuotas:
         cur.execute("""
             INSERT INTO venta_cuotas (venta_id,numero_cuota,fecha_venc,monto)
@@ -1936,6 +1953,8 @@ def get_cxc_detalle(venta_id: int) -> dict:
     data["total_cuotas"] = round(tot_cuotas, 2)
     data["abonado"] = round(tot_abonado, 2)
     data["saldo"] = round(tot_cuotas - tot_abonado, 2)
+    data["total_abonos_bs"] = round(sum((a["monto_bs"] or 0) for a in data["abonos"]), 2)
+    data["tasa_promedio"] = round(sum((a["tasa_bs"] or 0) for a in data["abonos"]) / len(data["abonos"]), 2) if data["abonos"] else 0
     con.close()
     return data
 
@@ -1943,7 +1962,8 @@ def get_cxc_detalle(venta_id: int) -> dict:
 def registrar_abono(venta_id: int, cuota_id, monto: float, moneda: str,
                     monto_credito: float, metodo_nombre: str = "",
                     usuario: str = "", observaciones: str = "",
-                    fecha: str = "") -> int:
+                    fecha: str = "", monto_bs: float = 0,
+                    tasa_bs: float = 0) -> int:
     """Registra un abono a una venta a crédito. Devuelve el id o -1."""
     import datetime
     if not fecha:
@@ -1953,11 +1973,11 @@ def registrar_abono(venta_id: int, cuota_id, monto: float, moneda: str,
         cur = con.cursor()
         cur.execute("""
             INSERT INTO venta_abonos
-                (venta_id,cuota_id,fecha,monto,moneda,monto_credito,
+                (venta_id,cuota_id,fecha,monto,moneda,monto_credito,monto_bs,tasa_bs,
                  metodo_nombre,usuario,observaciones)
-            VALUES (?,?,?,?,?,?,?,?,?)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?)
         """, (venta_id, cuota_id, fecha, monto, moneda, monto_credito,
-              metodo_nombre, usuario, observaciones))
+              monto_bs, tasa_bs, metodo_nombre, usuario, observaciones))
         abono_id = cur.lastrowid
         # Si la venta queda totalmente pagada, marcar estado 'Pagada'
         tot = cur.execute("SELECT COALESCE(SUM(monto),0) FROM venta_cuotas "
