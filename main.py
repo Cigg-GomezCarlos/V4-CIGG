@@ -10,14 +10,8 @@ Flujo de arranque:
   4. Mostrar pantalla de login
   5. Tras autenticación → panel principal con navegación lateral
 
-Módulos disponibles:
-  📁 Archivos   — usuarios, máquinas, proveedores, clientes, sistemas
-  📊 Ventas     — facturación y ventas (en desarrollo)
-  📦 Inventario — control de stock (en desarrollo)
-  💱 Monedas    — tasas USD/EUR/USDT/VES/Tasa Externa
-  🔧 Servicios  — órdenes de servicio (en desarrollo)
-  📄 Documentos — gestión documental (en desarrollo)
-  📈 Informes   — reportes y dashboards (en desarrollo)
+Novedad: botón 🌙/☀️ en la barra superior para alternar modo claro/oscuro.
+El modo elegido se guarda en config/modo.json y se recuerda al reiniciar.
 """
 
 import os
@@ -47,8 +41,74 @@ from modulos.compras     import ModuloCompras
 inicializar_todo()
 inicializar_tablas()
 actualizar_en_background()          # actualiza tasas sin bloquear la UI
-# ── Modo oscuro global ────────────────────────────────────────────────────────
-ctk.set_appearance_mode("Dark")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# UTILIDADES DE TEMA
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _ruta_base() -> str:
+    """Ruta del proyecto (compatible con PyInstaller)."""
+    if getattr(sys, "frozen", False):
+        return sys._MEIPASS
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+def _cargar_modo() -> str:
+    """Lee el último modo usado desde config/modo.json (Dark por defecto)."""
+    try:
+        with open(os.path.join(_ruta_base(), "config", "modo.json"),
+                  encoding="utf-8") as f:
+            return json.load(f).get("modo", "Dark")
+    except Exception:
+        return "Dark"
+
+
+# ── Modo claro/oscuro global (persistido) ────────────────────────────────────
+ctk.set_appearance_mode(_cargar_modo())
+
+
+class Paleta(dict):
+    """
+    Diccionario de colores consciente del tema activo.
+
+    Resolución de claves:
+      - col["tarjetas"]      → devuelve "tarjetas_oscuro" o "tarjetas_claro"
+                               según ctk.get_appearance_mode().
+      - col["fondo_oscuro"]  → aunque lleve sufijo, se resuelve SIEMPRE contra
+                               el tema activo (por eso funciona en ambos modos).
+      - col["principal"]     → clave neutra con variantes: usa
+                               "principal_oscuro" / "principal_claro".
+
+    Gracias a esta clase, TODOS los módulos que lean self.estilos["colores"]
+    reciben automáticamente el color correcto sin cambiar su código.
+    """
+
+    def __getitem__(self, clave):
+        modo = "oscuro" if ctk.get_appearance_mode() == "Dark" else "claro"
+
+        # 1) La clave pide explícitamente un tema:  tarjetas → tarjetas_oscuro
+        clave_tema = f"{clave}_{modo}"
+        if clave_tema in self:
+            return super().__getitem__(clave_tema)
+
+        # 2) La clave ya trae sufijo (fondo_oscuro): se resuelve igual contra
+        #    el tema activo para que nunca devuelva un color del modo opuesto.
+        base, sep, sufijo = clave.rpartition("_")
+        if sep and sufijo in ("oscuro", "claro"):
+            clave_resuelta = f"{base}_{modo}"
+            if clave_resuelta in self:
+                return super().__getitem__(clave_resuelta)
+
+        # 3) Clave neutra sin variantes: se devuelve tal cual.
+        return super().__getitem__(clave)
+
+    def get(self, clave, default=None):
+        """Mismo comportamiento que __getitem__ (dict.get no lo llamaría)."""
+        try:
+            return self[clave]
+        except KeyError:
+            return default
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -64,6 +124,7 @@ class AppAdministrativa(ctk.CTk):
       - Gestionar pantalla completa (modo kiosco)
       - Controlar login / logout
       - Enrutar módulos en el área de trabajo
+      - Alternar modo claro/oscuro (persistido en config/modo.json)
     """
 
     def __init__(self):
@@ -113,20 +174,62 @@ class AppAdministrativa(ctk.CTk):
     # ─── Configuración ────────────────────────────────────────────────────────
 
     def _cargar_estilos(self) -> dict:
-        """Lee config/estilos.json y convierte listas de fuentes a tuplas."""
-        if getattr(sys, "frozen", False):
-            base = sys._MEIPASS
-        else:
-            base = os.path.dirname(os.path.abspath(__file__))
-
-        with open(os.path.join(base, "config", "estilos.json"),
+        """Lee config/estilos.json, convierte fuentes a tuplas y envuelve
+        los bloques de colores en Paleta (consciente del tema)."""
+        with open(os.path.join(_ruta_base(), "config", "estilos.json"),
                   encoding="utf-8") as f:
             datos = json.load(f)
 
         if "fuentes" in datos:
             datos["fuentes"] = {k: tuple(v)
                                  for k, v in datos["fuentes"].items()}
+
+        datos["colores"]        = Paleta(datos["colores"])
+        datos["barra_superior"] = Paleta(datos["barra_superior"])
         return datos
+
+    # ─── Tema claro/oscuro ────────────────────────────────────────────────────
+
+    def _icono_modo(self) -> str:
+        """Icono del botón: ☀️ si está oscuro (click → claro), 🌙 si no."""
+        return "☀️" if ctk.get_appearance_mode() == "Dark" else "🌙"
+
+    def _guardar_modo(self, modo: str):
+        """Persiste el modo en config/modo.json para el próximo arranque."""
+        try:
+            with open(os.path.join(_ruta_base(), "config", "modo.json"),
+                      "w", encoding="utf-8") as f:
+                json.dump({"modo": modo}, f)
+        except Exception:
+            pass
+
+    def _alternar_modo(self):
+        """Conmuta claro/oscuro, repinta lo fijo y reconstruye la pantalla."""
+        nuevo = "Light" if ctk.get_appearance_mode() == "Dark" else "Dark"
+        ctk.set_appearance_mode(nuevo)
+        self._guardar_modo(nuevo)
+
+        col = self.estilos["colores"]
+        cfg = self.estilos["barra_superior"]
+
+        # Elementos fijos que no se reconstruyen con la pantalla
+        self.configure(fg_color=col["fondo_oscuro"])
+        self._barra.configure(fg_color=cfg["fondo"])
+        self._wrap_footer.configure(fg_color=col["sidebar"])
+        self._sep_footer.configure(fg_color=col["tarjetas"])
+        self._lbl_footer_user.configure(text_color=col["texto_oscuro"])
+        self._lbl_footer_tasas.configure(text_color=col["principal"])
+        self._btn_modo.configure(
+            text=self._icono_modo(),
+            text_color=col["texto_barra"],
+            hover_color=cfg["hover_minimizar"],
+        )
+
+        # Reconstruir la pantalla activa para aplicar la nueva paleta
+        if self.usuario_actual:
+            self.mostrar_panel_principal()
+        else:
+            self.mostrar_login()
 
     # ─── Barra superior ───────────────────────────────────────────────────────
 
@@ -138,6 +241,7 @@ class AppAdministrativa(ctk.CTk):
                              fg_color=cfg["fondo"])
         barra.pack(side="top", fill="x")
         barra.pack_propagate(False)
+        self._barra = barra     # referencia para repintar al cambiar de tema
 
         ctk.CTkLabel(barra, image=self.img_barra, text="").pack(
             side="left", padx=(15, 8))
@@ -153,27 +257,40 @@ class AppAdministrativa(ctk.CTk):
         ctk.CTkButton(
             barra, text="✕", width=45, height=40, corner_radius=0,
             fg_color="transparent", hover_color=col["error"],
-            text_color="#ffffff", font=("Arial", 14, "bold"),
+            text_color=col["texto_barra"], font=("Arial", 14, "bold"),
             command=self.quit,
         ).pack(side="right")
 
         ctk.CTkButton(
             barra, text="—", width=45, height=40, corner_radius=0,
             fg_color="transparent", hover_color=cfg["hover_minimizar"],
-            text_color="#ffffff", font=("Arial", 14, "bold"),
+            text_color=col["texto_barra"], font=("Arial", 14, "bold"),
             command=self._minimizar,
         ).pack(side="right")
+
+        # Botón de cambio de tema ☀️/🌙 (conmuta modo claro/oscuro)
+        self._btn_modo = ctk.CTkButton(
+            barra, text=self._icono_modo(), width=45, height=40,
+            corner_radius=0, fg_color="transparent",
+            hover_color=cfg["hover_minimizar"],
+            text_color=col["texto_barra"], font=("Segoe UI Emoji", 14),
+            command=self._alternar_modo,
+        )
+        self._btn_modo.pack(side="right")
 
     # ─── Pie de página ────────────────────────────────────────────────────────
 
     def _crear_footer(self):
         col = self.estilos["colores"]
 
-        wrap = ctk.CTkFrame(self, corner_radius=0, fg_color="#020C1B")
+        wrap = ctk.CTkFrame(self, corner_radius=0, fg_color=col["sidebar"])
         wrap.pack(side="bottom", fill="x")
+        self._wrap_footer = wrap     # referencia para repintar al cambiar tema
 
         # Línea separadora
-        ctk.CTkFrame(wrap, height=1, fg_color=col["tarjetas"]).pack(fill="x")
+        sep = ctk.CTkFrame(wrap, height=1, fg_color=col["tarjetas"])
+        sep.pack(fill="x")
+        self._sep_footer = sep
 
         inner = ctk.CTkFrame(wrap, height=28, corner_radius=0,
                              fg_color="transparent")
@@ -182,14 +299,14 @@ class AppAdministrativa(ctk.CTk):
 
         self._lbl_footer_user = ctk.CTkLabel(
             inner, text="",
-            text_color=col.get("texto_oscuro", "#94A3B8"),
+            text_color=col["texto_oscuro"],
             font=("Roboto Mono", 10),
         )
         self._lbl_footer_user.pack(side="left", padx=14)
 
         self._lbl_footer_tasas = ctk.CTkLabel(
             inner, text="",
-            text_color=col.get("principal", "#00FF9D"),
+            text_color=col["principal"],
             font=("Roboto Mono", 10),
         )
         self._lbl_footer_tasas.pack(side="right", padx=14)
@@ -269,7 +386,7 @@ class AppAdministrativa(ctk.CTk):
         txt_user = ctk.CTkEntry(
             panel, placeholder_text="ID DE USUARIO CIGG",
             width=320, font=fuente, text_color=col["texto_oscuro"],
-            fg_color="#0A192F", border_color=col["principal"],
+            fg_color=col["entrada"], border_color=col["principal"],
         )
         txt_user.pack(pady=12)
         txt_user.focus()
@@ -278,7 +395,7 @@ class AppAdministrativa(ctk.CTk):
             panel, placeholder_text="TOKEN DE ACCESO",
             show="*", width=320, font=fuente,
             text_color=col["texto_oscuro"],
-            fg_color="#0A192F", border_color=col["principal"],
+            fg_color=col["entrada"], border_color=col["principal"],
         )
         txt_pass.pack(pady=12)
 
@@ -317,7 +434,7 @@ class AppAdministrativa(ctk.CTk):
         # Barra lateral
         self.sidebar = ctk.CTkFrame(
             self.contenedor, width=240, corner_radius=0,
-            fg_color="#020C1B")
+            fg_color=col["sidebar"])
         self.sidebar.pack(side="left", fill="y")
 
         # Área de trabajo
